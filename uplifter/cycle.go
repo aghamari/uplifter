@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"os"
 	"sort"
+	"strings"
 )
 
 // CycleInfo contains information about a detected cycle
@@ -383,65 +384,46 @@ func verifySubCycleBySignature(signatures []string, startIdx, cycleLen int) bool
 // getKernelSignature returns a simplified signature for a kernel name
 // This groups similar kernels together for pattern detection
 func getKernelSignature(name string) string {
-	// Check for known patterns and return simplified names
-	if len(name) > 7 && name[:7] == "triton_" {
-		// Group triton kernels by their main operation
-		if contains(name, "_red_") {
-			return "triton_reduce"
+	// Generic signature extraction without hardcoding kernel names
+	// Strategy: extract the base kernel name by removing:
+	// 1. Template parameters (content in <>)
+	// 2. Configuration suffixes (like _GROUP_K_128_...)
+	// 3. Trailing numbers
+	
+	sig := name
+	
+	// Remove template parameters - find first < and truncate
+	if idx := strings.Index(sig, "<"); idx > 0 {
+		sig = sig[:idx]
+	}
+	
+	// Remove common configuration suffixes
+	// These patterns typically indicate compile-time parameters, not different kernels
+	configPatterns := []string{
+		"_GROUP_K_", "_GROUP_N_", "_BLOCK_SIZE_", "_GRID_",
+		"_MT", "_MI", "_SN_", "_AFC", "_LDSB", "_LPA", "_LPB",
+		"_UserArgs_", "_shortname",
+	}
+	for _, pattern := range configPatterns {
+		if idx := strings.Index(sig, pattern); idx > 0 {
+			sig = sig[:idx]
 		}
-		if contains(name, "_poi_") {
-			return "triton_pointwise"
-		}
-		return "triton_other"
 	}
-
-	if contains(name, "wvSplitK") {
-		if contains(name, "_big_") {
-			return "wvSplitK_big"
-		}
-		if contains(name, "_sml_") {
-			return "wvSplitK_sml"
-		}
-		return "wvSplitK"
+	
+	// Remove trailing numbers (like _0, _1, _9)
+	for len(sig) > 2 && sig[len(sig)-1] >= '0' && sig[len(sig)-1] <= '9' && sig[len(sig)-2] == '_' {
+		sig = sig[:len(sig)-2]
 	}
-
-	if contains(name, "paged_attention") {
-		if contains(name, "reduce") {
-			return "paged_attention_reduce"
-		}
-		if contains(name, "QKV") {
-			return "paged_attention_qkv"
-		}
-		return "paged_attention"
+	
+	// Clean up any trailing underscores
+	sig = strings.TrimRight(sig, "_")
+	
+	// If signature is empty or too short, use a hash
+	if len(sig) < 3 {
+		return fmt.Sprintf("other_%d", hashString(name)%1000)
 	}
-
-	if contains(name, "reshape_and_cache") {
-		return "reshape_cache"
-	}
-
-	if contains(name, "Cijk_") {
-		return "gemm"
-	}
-
-	if contains(name, "elementwise") {
-		return "elementwise"
-	}
-
-	if contains(name, "reduce_kernel") {
-		return "reduce"
-	}
-
-	if contains(name, "FmhaFwd") || contains(name, "fmha") {
-		return "flash_attention"
-	}
-
-	if contains(name, "ck_tile::kentry") {
-		return "ck_attention"
-	}
-
-	// For other kernels, use a hash of the name to keep them distinct
-	// but consistent across occurrences
-	return fmt.Sprintf("other_%d", hashString(name)%1000)
+	
+	return sig
 }
 
 func findKernelPositions(events []KernelEvent, name string) []int {

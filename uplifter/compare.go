@@ -131,60 +131,109 @@ func analyzeTrace(path string, fullParse bool) (*CycleResult, error) {
 // matchKernelsBySignature matches kernels between eager and compiled traces
 // Format follows the Excel: eager_kernel | compiled_kernel | duration
 // Preserves COMPILED trace order, with fused eager kernels at the end
+// Handles duplicate kernel names by tracking individual instances
 func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelMatch {
-	var matches []KernelMatch
-
-	// Build maps for matching
-	eagerByName := make(map[string]KernelStats)
-	eagerBySig := make(map[string][]KernelStats)
-
-	for _, k := range eagerResult.Kernels {
-		eagerByName[k.Name] = k
-		sig := getKernelSignature(k.Name)
-		eagerBySig[sig] = append(eagerBySig[sig], k)
+	// Track eager kernels by index (to handle duplicates)
+	type eagerEntry struct {
+		idx    int
+		kernel KernelStats
 	}
 
-	// Track which eager kernels have been matched
-	matchedEager := make(map[string]bool)
+	// Build maps for matching - store ALL instances, not just one per name
+	eagerByName := make(map[string][]eagerEntry) // name -> list of kernels with that name
+	eagerBySig := make(map[string][]eagerEntry)  // signature -> list of kernels
+
+	for i, k := range eagerResult.Kernels {
+		entry := eagerEntry{idx: i, kernel: k}
+		eagerByName[k.Name] = append(eagerByName[k.Name], entry)
+		sig := getKernelSignature(k.Name)
+		eagerBySig[sig] = append(eagerBySig[sig], entry)
+	}
+
+	// Track which eager kernel INDICES have been matched (handles duplicates)
+	matchedEagerIdx := make(map[int]bool)
+
+	// PASS 1: Reserve exact matches - pair up compiled with eager by name
+	// For each compiled kernel, find an unassigned eager kernel with the same name
+	reservedForExact := make(map[int]int) // compiled idx -> eager idx
+
+	for ci, ck := range compiledResult.Kernels {
+		if entries, exists := eagerByName[ck.Name]; exists {
+			for _, entry := range entries {
+				// Check if this eager kernel is already reserved
+				alreadyReserved := false
+				for _, reservedEagerIdx := range reservedForExact {
+					if reservedEagerIdx == entry.idx {
+						alreadyReserved = true
+						break
+					}
+				}
+				if !alreadyReserved {
+					reservedForExact[ci] = entry.idx
+					break
+				}
+			}
+		}
+	}
+
+	// PASS 2: Process compiled kernels in order
+	var matches []KernelMatch
 	idx := 0
 
-	// Iterate through COMPILED kernels in order (preserves execution order)
-	for _, ck := range compiledResult.Kernels {
+	for ci, ck := range compiledResult.Kernels {
 		sig := getKernelSignature(ck.Name)
-		
-		// Try exact match first
-		if ek, exists := eagerByName[ck.Name]; exists && !matchedEager[ek.Name] {
+
+		// Check if this compiled kernel has an exact match reserved
+		if eagerIdx, hasExact := reservedForExact[ci]; hasExact && !matchedEagerIdx[eagerIdx] {
+			eagerName := eagerResult.Kernels[eagerIdx].Name
 			matches = append(matches, KernelMatch{
 				Index:          idx,
-				EagerKernels:   []string{ek.Name},
+				EagerKernels:   []string{eagerName},
 				CompiledKernel: ck.Name,
 				CompiledDur:    ck.AvgDur,
 				Signature:      sig,
 				MatchType:      "exact",
 			})
-			matchedEager[ek.Name] = true
+			matchedEagerIdx[eagerIdx] = true
 			idx++
 			continue
 		}
 
-		// Try signature match (similar kernels)
-		if eagerKernels, exists := eagerBySig[sig]; exists {
-			var unmatched []string
-			for _, ek := range eagerKernels {
-				if !matchedEager[ek.Name] {
-					unmatched = append(unmatched, ek.Name)
-					matchedEager[ek.Name] = true
+		// Try signature match - find first unmatched, unreserved eager kernel
+		if entries, exists := eagerBySig[sig]; exists {
+			var matched string
+			var matchedIdx int = -1
+			for _, entry := range entries {
+				// Skip if already matched
+				if matchedEagerIdx[entry.idx] {
+					continue
 				}
+				// Skip if reserved for an exact match
+				reserved := false
+				for _, reservedEagerIdx := range reservedForExact {
+					if reservedEagerIdx == entry.idx {
+						reserved = true
+						break
+					}
+				}
+				if reserved {
+					continue
+				}
+				// Found an available eager kernel
+				matched = entry.kernel.Name
+				matchedIdx = entry.idx
+				break
 			}
-			if len(unmatched) > 0 {
+			if matchedIdx >= 0 {
 				matches = append(matches, KernelMatch{
 					Index:          idx,
-					EagerKernels:   unmatched,
+					EagerKernels:   []string{matched},
 					CompiledKernel: ck.Name,
 					CompiledDur:    ck.AvgDur,
 					Signature:      sig,
 					MatchType:      "similar",
 				})
+				matchedEagerIdx[matchedIdx] = true
 				idx++
 				continue
 			}
@@ -202,9 +251,9 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 		idx++
 	}
 
-	// Append unmatched eager kernels at the end (fused/removed)
-	for _, ek := range eagerResult.Kernels {
-		if matchedEager[ek.Name] {
+	// PASS 3: Append unmatched eager kernels at the end (fused/removed)
+	for i, ek := range eagerResult.Kernels {
+		if matchedEagerIdx[i] {
 			continue
 		}
 		matches = append(matches, KernelMatch{
@@ -215,7 +264,6 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			Signature:      getKernelSignature(ek.Name),
 			MatchType:      "fused",
 		})
-		matchedEager[ek.Name] = true
 		idx++
 	}
 
