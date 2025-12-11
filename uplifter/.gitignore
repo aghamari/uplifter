@@ -1,2 +1,6 @@
 perfetto-cycle
 uplifter
+
+# Output files
+*.csv
+*.xlsx

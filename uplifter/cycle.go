@@ -389,14 +389,14 @@ func getKernelSignature(name string) string {
 	// 1. Template parameters (content in <>)
 	// 2. Configuration suffixes (like _GROUP_K_128_...)
 	// 3. Trailing numbers
-	
+
 	sig := name
-	
+
 	// Remove template parameters - find first < and truncate
 	if idx := strings.Index(sig, "<"); idx > 0 {
 		sig = sig[:idx]
 	}
-	
+
 	// Remove common configuration suffixes
 	// These patterns typically indicate compile-time parameters, not different kernels
 	configPatterns := []string{
@@ -409,20 +409,20 @@ func getKernelSignature(name string) string {
 			sig = sig[:idx]
 		}
 	}
-	
+
 	// Remove trailing numbers (like _0, _1, _9)
 	for len(sig) > 2 && sig[len(sig)-1] >= '0' && sig[len(sig)-1] <= '9' && sig[len(sig)-2] == '_' {
 		sig = sig[:len(sig)-2]
 	}
-	
+
 	// Clean up any trailing underscores
 	sig = strings.TrimRight(sig, "_")
-	
+
 	// If signature is empty or too short, use a hash
 	if len(sig) < 3 {
 		return fmt.Sprintf("other_%d", hashString(name)%1000)
 	}
-	
+
 	return sig
 }
 
@@ -574,4 +574,3 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
-
