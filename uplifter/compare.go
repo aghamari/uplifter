@@ -33,7 +33,7 @@ type KernelMatch struct {
 	EagerMin       float64  // Min duration in eager mode
 	EagerMax       float64  // Max duration in eager mode
 	EagerStdDev    float64  // Std deviation in eager mode
-	MatchType      string   // "exact", "similar", "fused", "only_compiled"
+	MatchType      string   // "exact", "similar", "removed", "new_only"
 	Signature      string   // Common signature used for matching
 }
 
@@ -269,7 +269,7 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			CompiledMax:    ck.MaxDur,
 			CompiledStdDev: ck.StdDev,
 			Signature:      sig,
-			MatchType:      "compiled_only",
+			MatchType:      "new_only",
 		})
 		idx++
 	}
@@ -289,7 +289,7 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			EagerMax:       ek.MaxDur,
 			EagerStdDev:    ek.StdDev,
 			Signature:      getKernelSignature(ek.Name),
-			MatchType:      "fused",
+			MatchType:      "removed",
 		})
 		idx++
 	}
@@ -354,7 +354,7 @@ func (r *CompareResult) WriteCompareCSV(w io.Writer) error {
 				m.EagerKernels[i],
 				".", // Already matched to compiled above
 				"",
-				"fused",
+				"removed",
 			}
 			if err := writer.Write(extraRow); err != nil {
 				return err
@@ -564,7 +564,7 @@ func (r *CompareResult) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\n=== Fused/Removed Eager Kernels (no compiled equivalent) ===\n")
 	fusedCount := 0
 	for _, m := range r.Matches {
-		if m.MatchType == "fused" {
+		if m.MatchType == "removed" {
 			fusedCount++
 			for _, ek := range m.EagerKernels {
 				fmt.Fprintf(w, "  - %s\n", truncateString(ek, 75))
@@ -579,7 +579,7 @@ func (r *CompareResult) WriteSummary(w io.Writer) {
 	fmt.Fprintf(w, "\n=== Compiled-Only Kernels (new fused kernels) ===\n")
 	compiledOnlyCount := 0
 	for _, m := range r.Matches {
-		if m.MatchType == "compiled_only" {
+		if m.MatchType == "new_only" {
 			compiledOnlyCount++
 			pct := 0.0
 			if r.TotalTime > 0 {

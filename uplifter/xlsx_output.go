@@ -32,12 +32,12 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E2EFDA"}, Pattern: 1}, // Light green
 	})
 
-	fusedStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFC7CE"}, Pattern: 1}, // Light red
+	removedStyle, _ := f.NewStyle(&excelize.Style{
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFC7CE"}, Pattern: 1}, // Light red - baseline only
 	})
 
-	compiledOnlyStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFEB9C"}, Pattern: 1}, // Light yellow
+	newOnlyStyle, _ := f.NewStyle(&excelize.Style{
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFEB9C"}, Pattern: 1}, // Light yellow - new only
 	})
 
 	// Heatmap styles for change column
@@ -131,10 +131,10 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 			} else { // Within ±5% - neutral
 				f.SetCellStyle(sheetName, changeCell, changeCell, neutralStyle)
 			}
-		} else if m.MatchType == "compiled_only" {
+		} else if m.MatchType == "new_only" {
 			f.SetCellValue(sheetName, changeCell, "NEW")
 			f.SetCellStyle(sheetName, changeCell, changeCell, neutralStyle)
-		} else if m.MatchType == "fused" {
+		} else if m.MatchType == "removed" {
 			f.SetCellValue(sheetName, changeCell, "REMOVED")
 			f.SetCellStyle(sheetName, changeCell, changeCell, improvedStyle)
 		}
@@ -147,12 +147,12 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 		case "exact", "similar":
 			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), exactStyle)
 			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), exactStyle)
-		case "fused":
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), fusedStyle)
-			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), fusedStyle)
-		case "compiled_only":
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), compiledOnlyStyle)
-			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), compiledOnlyStyle)
+		case "removed":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), removedStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), removedStyle)
+		case "new_only":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), newOnlyStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), newOnlyStyle)
 		}
 
 		row++
@@ -161,8 +161,8 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 		for i := 1; i < len(m.EagerKernels); i++ {
 			f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), m.EagerKernels[i])
 			f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), ".")
-			f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), "fused")
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("L%d", row), fusedStyle)
+			f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), "removed")
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("L%d", row), removedStyle)
 			row++
 		}
 	}

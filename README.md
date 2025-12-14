@@ -7,10 +7,10 @@ A tool for analyzing and comparing Perfetto traces from AMD GPU deep learning wo
 - **Cycle Detection**: Automatically detects repeating kernel patterns in traces
 - **Phase Detection**: Distinguishes between prefill and decode phases using boundary detection
 - **Trace Comparison**: Compares baseline vs new traces, identifying:
-  - Exact kernel matches
-  - Similar kernels (same type, different parameters)
-  - Fused/removed kernels (baseline kernels eliminated in new version)
-  - New kernels (e.g., optimized implementations)
+  - **exact**: Identical kernel names
+  - **similar**: Same kernel type, different parameters
+  - **removed**: Kernels only in baseline (eliminated in new version)
+  - **new_only**: Kernels only in new version (e.g., optimized implementations)
 - **Performance Heatmap**: Change (%) column with color coding (green=faster, red=slower)
 - **Statistics**: Min, max, avg, and stddev for each kernel
 - **Multiple Output Formats**: CSV and Excel (.xlsx) with color-coded match types
@@ -124,9 +124,9 @@ index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,coun
 **Color Coding:**
 
 Row colors (match type):
-- 🟢 **Light Green**: Exact/similar matches
-- 🟡 **Yellow**: New kernels (only in new version)
-- 🔴 **Light Red**: Removed kernels (only in baseline)
+- 🟢 **Light Green**: `exact` or `similar` matches
+- 🟡 **Yellow**: `new_only` - kernels only in new version
+- 🔴 **Light Red**: `removed` - kernels only in baseline
 
 Change (%) heatmap:
 - 🟢 **Green** (< -5%): Performance improved (new is faster)

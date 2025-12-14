@@ -49,12 +49,12 @@ func TestIntegrationCompareCsvDecode(t *testing.T) {
 	// Verify match counts
 	matchCounts := countMatchTypes(matches)
 
-	// Based on current output: exact: 9, similar: 8, fused: 14, compiled_only: 11
+	// Based on current output: exact: 9, similar: 8, removed: 14, new_only: 11
 	if matchCounts["exact"] < 8 {
 		t.Errorf("Expected at least 8 exact matches, got %d", matchCounts["exact"])
 	}
-	if matchCounts["fused"] < 10 {
-		t.Errorf("Expected at least 10 fused kernels, got %d", matchCounts["fused"])
+	if matchCounts["removed"] < 10 {
+		t.Errorf("Expected at least 10 removed kernels, got %d", matchCounts["removed"])
 	}
 
 	// Verify fmoe kernel is matched exactly
