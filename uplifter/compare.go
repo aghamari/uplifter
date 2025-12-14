@@ -14,22 +14,29 @@ import (
 
 // CompareResult holds the comparison between two traces
 type CompareResult struct {
-	EagerName      string
-	CompiledName   string
-	EagerCycle     int
-	CompiledCycle  int
-	Matches        []KernelMatch
-	TotalTime      float64 // Total time in compiled mode
+	EagerName     string
+	CompiledName  string
+	EagerCycle    int
+	CompiledCycle int
+	Matches       []KernelMatch
+	TotalTime     float64 // Total time in compiled mode
 }
 
 // KernelMatch represents a matched pair of kernels between two traces
 type KernelMatch struct {
-	Index           int
-	EagerKernels    []string // Kernel name(s) in eager mode (may be multiple if fused)
-	CompiledKernel  string   // Kernel name in compiled mode
-	CompiledDur     float64  // Duration in compiled mode (µs)
-	MatchType       string   // "exact", "similar", "fused", "only_compiled"
-	Signature       string   // Common signature used for matching
+	Index          int
+	EagerKernels   []string // Kernel name(s) in eager mode (may be multiple if fused)
+	CompiledKernel string   // Kernel name in compiled mode
+	CompiledDur    float64  // Duration in compiled mode (µs)
+	CompiledMin    float64  // Min duration in compiled mode
+	CompiledMax    float64  // Max duration in compiled mode
+	CompiledStdDev float64  // Std deviation in compiled mode
+	EagerDur       float64  // Duration in eager/trace1 mode (µs) - may be 0 if no timing
+	EagerMin       float64  // Min duration in eager mode
+	EagerMax       float64  // Max duration in eager mode
+	EagerStdDev    float64  // Std deviation in eager mode
+	MatchType      string   // "exact", "similar", "fused", "only_compiled"
+	Signature      string   // Common signature used for matching
 }
 
 // CompareTraces compares two trace files and produces a kernel-by-kernel comparison
@@ -90,7 +97,7 @@ func analyzeTrace(path string, fullParse bool) (*CycleResult, error) {
 	// Step 1: Parse trace file
 	fmt.Fprintf(os.Stderr, "  [Step 1] Parsing trace file...\n")
 	parseStart := time.Now()
-	
+
 	var events []KernelEvent
 	var err error
 
@@ -185,12 +192,19 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 
 		// Check if this compiled kernel has an exact match reserved
 		if eagerIdx, hasExact := reservedForExact[ci]; hasExact && !matchedEagerIdx[eagerIdx] {
-			eagerName := eagerResult.Kernels[eagerIdx].Name
+			ek := eagerResult.Kernels[eagerIdx]
 			matches = append(matches, KernelMatch{
 				Index:          idx,
-				EagerKernels:   []string{eagerName},
+				EagerKernels:   []string{ek.Name},
 				CompiledKernel: ck.Name,
 				CompiledDur:    ck.AvgDur,
+				CompiledMin:    ck.MinDur,
+				CompiledMax:    ck.MaxDur,
+				CompiledStdDev: ck.StdDev,
+				EagerDur:       ek.AvgDur,
+				EagerMin:       ek.MinDur,
+				EagerMax:       ek.MaxDur,
+				EagerStdDev:    ek.StdDev,
 				Signature:      sig,
 				MatchType:      "exact",
 			})
@@ -225,11 +239,19 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 				break
 			}
 			if matchedIdx >= 0 {
+				ek := eagerResult.Kernels[matchedIdx]
 				matches = append(matches, KernelMatch{
 					Index:          idx,
 					EagerKernels:   []string{matched},
 					CompiledKernel: ck.Name,
 					CompiledDur:    ck.AvgDur,
+					CompiledMin:    ck.MinDur,
+					CompiledMax:    ck.MaxDur,
+					CompiledStdDev: ck.StdDev,
+					EagerDur:       ek.AvgDur,
+					EagerMin:       ek.MinDur,
+					EagerMax:       ek.MaxDur,
+					EagerStdDev:    ek.StdDev,
 					Signature:      sig,
 					MatchType:      "similar",
 				})
@@ -245,6 +267,9 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			EagerKernels:   []string{"(none)"},
 			CompiledKernel: ck.Name,
 			CompiledDur:    ck.AvgDur,
+			CompiledMin:    ck.MinDur,
+			CompiledMax:    ck.MaxDur,
+			CompiledStdDev: ck.StdDev,
 			Signature:      sig,
 			MatchType:      "compiled_only",
 		})
@@ -261,6 +286,10 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			EagerKernels:   []string{ek.Name},
 			CompiledKernel: ".",
 			CompiledDur:    0,
+			EagerDur:       ek.AvgDur,
+			EagerMin:       ek.MinDur,
+			EagerMax:       ek.MaxDur,
+			EagerStdDev:    ek.StdDev,
 			Signature:      getKernelSignature(ek.Name),
 			MatchType:      "fused",
 		})
@@ -304,11 +333,11 @@ func (r *CompareResult) WriteCompareCSV(w io.Writer) error {
 		if len(m.EagerKernels) > 0 && m.EagerKernels[0] != "(none)" {
 			eagerStr = m.EagerKernels[0]
 		}
-		
+
 		compiledStr := m.CompiledKernel
 		durStr := fmt.Sprintf("%.3f", m.CompiledDur)
 		if m.CompiledKernel == "." {
-			durStr = ""  // No duration for fused/removed kernels
+			durStr = "" // No duration for fused/removed kernels
 		}
 
 		row := []string{
@@ -320,12 +349,12 @@ func (r *CompareResult) WriteCompareCSV(w io.Writer) error {
 		if err := writer.Write(row); err != nil {
 			return err
 		}
-		
+
 		// If multiple eager kernels matched to one compiled, show them on additional rows
 		for i := 1; i < len(m.EagerKernels); i++ {
 			extraRow := []string{
 				m.EagerKernels[i],
-				".",  // Already matched to compiled above
+				".", // Already matched to compiled above
 				"",
 				"fused",
 			}
@@ -360,19 +389,42 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 	})
 
 	exactStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#C6EFCE"}, Pattern: 1},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E2EFDA"}, Pattern: 1}, // Light green
 	})
 
 	fusedStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFC7CE"}, Pattern: 1},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFC7CE"}, Pattern: 1}, // Light red
 	})
 
 	compiledOnlyStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFEB9C"}, Pattern: 1},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#FFEB9C"}, Pattern: 1}, // Light yellow
 	})
 
-	// Write headers
-	headers := []string{"Eager Kernel", "Compiled Kernel", "Duration (µs)", "Match Type"}
+	// Heatmap styles for change column
+	improvedStyle, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#00B050"}, Pattern: 1}, // Green
+		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
+	regressedStyle, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#FF0000"}, Pattern: 1}, // Red
+		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
+	neutralStyle, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#FFC000"}, Pattern: 1}, // Orange/amber
+		Font:      &excelize.Font{Bold: true},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+
+	// Write headers - Baseline vs New naming with Change column
+	headers := []string{
+		"Baseline Kernel", "Base Avg (µs)", "Base Min", "Base Max", "Base StdDev",
+		"New Kernel", "New Avg (µs)", "New Min", "New Max", "New StdDev",
+		"Change (%)", "Match Type",
+	}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheetName, cell, h)
@@ -380,59 +432,103 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 	}
 
 	// Set column widths
-	f.SetColWidth(sheetName, "A", "A", 60)
-	f.SetColWidth(sheetName, "B", "B", 60)
-	f.SetColWidth(sheetName, "C", "C", 15)
-	f.SetColWidth(sheetName, "D", "D", 15)
+	f.SetColWidth(sheetName, "A", "A", 55) // Baseline Kernel
+	f.SetColWidth(sheetName, "B", "E", 12) // Baseline stats
+	f.SetColWidth(sheetName, "F", "F", 55) // New Kernel
+	f.SetColWidth(sheetName, "G", "J", 12) // New stats
+	f.SetColWidth(sheetName, "K", "K", 12) // Change (%)
+	f.SetColWidth(sheetName, "L", "L", 15) // Match Type
 
 	// Write summary row
-	f.SetCellValue(sheetName, "A2", fmt.Sprintf("Total (%d eager kernels)", r.EagerCycle))
-	f.SetCellValue(sheetName, "B2", fmt.Sprintf("(%d compiled kernels)", r.CompiledCycle))
-	f.SetCellValue(sheetName, "C2", r.TotalTime)
+	f.SetCellValue(sheetName, "A2", fmt.Sprintf("Total (%d baseline kernels)", r.EagerCycle))
+	f.SetCellValue(sheetName, "F2", fmt.Sprintf("(%d new kernels)", r.CompiledCycle))
+	f.SetCellValue(sheetName, "G2", r.TotalTime)
 
 	// Write data rows
 	row := 3
 	for _, m := range r.Matches {
-		eagerStr := "(none)"
+		baselineStr := "(none)"
 		if len(m.EagerKernels) > 0 && m.EagerKernels[0] != "(none)" {
-			eagerStr = m.EagerKernels[0]
+			baselineStr = m.EagerKernels[0]
 		}
 
-		compiledStr := m.CompiledKernel
-		
-		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), eagerStr)
-		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), compiledStr)
-		if m.CompiledKernel != "." {
-			f.SetCellValue(sheetName, fmt.Sprintf("C%d", row), m.CompiledDur)
-		}
-		f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), m.MatchType)
+		newStr := m.CompiledKernel
 
-		// Apply style based on match type
-		rowRange := fmt.Sprintf("A%d:D%d", row, row)
+		// Column A: Baseline kernel name
+		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), baselineStr)
+
+		// Columns B-E: Baseline stats (only if has timing data)
+		if m.EagerDur > 0 {
+			f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), m.EagerDur)
+			f.SetCellValue(sheetName, fmt.Sprintf("C%d", row), m.EagerMin)
+			f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), m.EagerMax)
+			f.SetCellValue(sheetName, fmt.Sprintf("E%d", row), m.EagerStdDev)
+		}
+
+		// Column F: New kernel name
+		f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), newStr)
+
+		// Columns G-J: New stats (only if has timing data)
+		if m.CompiledKernel != "." && m.CompiledDur > 0 {
+			f.SetCellValue(sheetName, fmt.Sprintf("G%d", row), m.CompiledDur)
+			f.SetCellValue(sheetName, fmt.Sprintf("H%d", row), m.CompiledMin)
+			f.SetCellValue(sheetName, fmt.Sprintf("I%d", row), m.CompiledMax)
+			f.SetCellValue(sheetName, fmt.Sprintf("J%d", row), m.CompiledStdDev)
+		}
+
+		// Column K: Change (%) with heatmap
+		// Negative = improvement (new is faster), Positive = regression (new is slower)
+		changeCell := fmt.Sprintf("K%d", row)
+		if m.EagerDur > 0 && m.CompiledDur > 0 {
+			changePercent := ((m.CompiledDur - m.EagerDur) / m.EagerDur) * 100
+			f.SetCellValue(sheetName, changeCell, changePercent)
+
+			// Apply heatmap style based on change
+			if changePercent < -5 { // Improved by more than 5%
+				f.SetCellStyle(sheetName, changeCell, changeCell, improvedStyle)
+			} else if changePercent > 5 { // Regressed by more than 5%
+				f.SetCellStyle(sheetName, changeCell, changeCell, regressedStyle)
+			} else { // Within ±5% - neutral
+				f.SetCellStyle(sheetName, changeCell, changeCell, neutralStyle)
+			}
+		} else if m.MatchType == "compiled_only" {
+			f.SetCellValue(sheetName, changeCell, "NEW")
+			f.SetCellStyle(sheetName, changeCell, changeCell, neutralStyle)
+		} else if m.MatchType == "fused" {
+			f.SetCellValue(sheetName, changeCell, "REMOVED")
+			f.SetCellStyle(sheetName, changeCell, changeCell, improvedStyle)
+		}
+
+		// Column L: Match type
+		f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), m.MatchType)
+
+		// Apply row style based on match type (excluding change column)
 		switch m.MatchType {
-		case "exact":
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("D%d", row), exactStyle)
+		case "exact", "similar":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), exactStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), exactStyle)
 		case "fused":
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("D%d", row), fusedStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), fusedStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), fusedStyle)
 		case "compiled_only":
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("D%d", row), compiledOnlyStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), compiledOnlyStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), compiledOnlyStyle)
 		}
-		_ = rowRange // suppress unused warning
 
 		row++
 
-		// Additional rows for multiple eager kernels
+		// Additional rows for multiple baseline kernels
 		for i := 1; i < len(m.EagerKernels); i++ {
 			f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), m.EagerKernels[i])
-			f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), ".")
-			f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), "fused")
-			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("D%d", row), fusedStyle)
+			f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), ".")
+			f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), "fused")
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("L%d", row), fusedStyle)
 			row++
 		}
 	}
 
 	// Add auto-filter
-	f.AutoFilter(sheetName, fmt.Sprintf("A1:D%d", row-1), nil)
+	f.AutoFilter(sheetName, fmt.Sprintf("A1:L%d", row-1), nil)
 
 	// Freeze first row
 	f.SetPanes(sheetName, &excelize.Panes{
@@ -499,7 +595,7 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	
+
 	// Read header
 	header, err := reader.Read()
 	if err != nil {
@@ -509,12 +605,21 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 	// Find column indices
 	nameIdx := -1
 	avgDurIdx := -1
+	minDurIdx := -1
+	maxDurIdx := -1
+	stdDevIdx := -1
 	for i, col := range header {
 		switch col {
 		case "kernel_name":
 			nameIdx = i
 		case "avg_duration_us":
 			avgDurIdx = i
+		case "min_duration_us":
+			minDurIdx = i
+		case "max_duration_us":
+			maxDurIdx = i
+		case "stddev_us":
+			stdDevIdx = i
 		}
 	}
 
@@ -541,10 +646,29 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 			continue // Skip invalid rows
 		}
 
-		kernels = append(kernels, KernelStats{
+		k := KernelStats{
 			Name:   record[nameIdx],
 			AvgDur: avgDur,
-		})
+		}
+
+		// Parse optional stats if columns exist
+		if minDurIdx >= 0 && minDurIdx < len(record) {
+			if v, err := strconv.ParseFloat(record[minDurIdx], 64); err == nil {
+				k.MinDur = v
+			}
+		}
+		if maxDurIdx >= 0 && maxDurIdx < len(record) {
+			if v, err := strconv.ParseFloat(record[maxDurIdx], 64); err == nil {
+				k.MaxDur = v
+			}
+		}
+		if stdDevIdx >= 0 && stdDevIdx < len(record) {
+			if v, err := strconv.ParseFloat(record[stdDevIdx], 64); err == nil {
+				k.StdDev = v
+			}
+		}
+
+		kernels = append(kernels, k)
 	}
 
 	return kernels, nil
@@ -645,4 +769,3 @@ func (r *CompareResult) WriteSummary(w io.Writer) {
 		fmt.Fprintf(w, "  (none)\n")
 	}
 }
-

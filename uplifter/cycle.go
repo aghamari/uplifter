@@ -24,7 +24,9 @@ type KernelStats struct {
 	MaxDur       float64
 	Count        int
 	AvgDur       float64
-	IndexInCycle int // Position within the cycle
+	StdDev       float64   // Standard deviation of durations
+	Durations    []float64 // Individual durations for stddev calculation
+	IndexInCycle int       // Position within the cycle
 }
 
 // NormalizeNames controls whether kernel names are normalized before comparison
@@ -148,10 +150,137 @@ func DetectCycleBySignature(events []KernelEvent) (*CycleInfo, error) {
 		return nil, fmt.Errorf("not enough events")
 	}
 
-	// First, find the outer cycle using exact matching
+	// Phase detection using BOUNDARY DETECTION:
+	// Find distinct cycle patterns at different parts of the trace
+	// Prefill and decode have different patterns (especially attention kernels)
+	var result *CycleInfo
+	var err error
+
+	switch PhaseMode {
+	case "prefill", "decode":
+		result, err = detectPhaseByBoundary(events, PhaseMode)
+		if err != nil || result == nil {
+			fmt.Fprintf(os.Stderr, "Boundary detection failed, falling back to standard detection\n")
+			result, err = detectCycleStandard(events, 0)
+		}
+	default: // "auto"
+		result, err = detectCycleStandard(events, 0)
+	}
+
+	return result, err
+}
+
+// detectPhaseByBoundary finds distinct cycle patterns for prefill vs decode
+// by comparing patterns at the beginning vs end of the trace
+func detectPhaseByBoundary(events []KernelEvent, phase string) (*CycleInfo, error) {
+	n := len(events)
+
+	// Find cycle pattern in first 15% (likely prefill region)
+	prefillEnd := n * 15 / 100
+	if prefillEnd < 500 {
+		prefillEnd = min(n/3, 2000)
+	}
+	fmt.Fprintf(os.Stderr, "Boundary detection: analyzing first %d events for prefill pattern...\n", prefillEnd)
+	prefillCycle := findOuterCycleWithSubcycle(events[:prefillEnd], events, 0)
+
+	// Find cycle pattern in last 60% (likely decode region)
+	decodeStart := n * 40 / 100
+	fmt.Fprintf(os.Stderr, "Boundary detection: analyzing events %d onwards for decode pattern...\n", decodeStart)
+	decodeCycle := findOuterCycleWithSubcycle(events[decodeStart:], events, decodeStart)
+
+	// Check if patterns are different
+	prefillSig := getCycleSignature(events, prefillCycle)
+	decodeSig := getCycleSignature(events, decodeCycle)
+
+	if prefillCycle != nil && decodeCycle != nil {
+		fmt.Fprintf(os.Stderr, "  Prefill pattern: %d kernels, signature: %s\n",
+			prefillCycle.CycleLength, truncateString(prefillSig, 60))
+		fmt.Fprintf(os.Stderr, "  Decode pattern: %d kernels, signature: %s\n",
+			decodeCycle.CycleLength, truncateString(decodeSig, 60))
+	}
+
+	// Determine which pattern to return based on phase
+	if phase == "prefill" {
+		if prefillCycle != nil {
+			// If patterns are different, we found a distinct prefill phase
+			if prefillSig != decodeSig {
+				fmt.Fprintf(os.Stderr, "Found distinct PREFILL pattern (different from decode)\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: prefill and decode patterns appear similar\n")
+			}
+			return prefillCycle, nil
+		}
+	} else { // decode
+		if decodeCycle != nil {
+			if prefillSig != decodeSig {
+				fmt.Fprintf(os.Stderr, "Found distinct DECODE pattern (different from prefill)\n")
+			}
+			return decodeCycle, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not detect %s pattern", phase)
+}
+
+// findOuterCycleWithSubcycle finds outer cycle and its sub-cycle in one go
+func findOuterCycleWithSubcycle(searchEvents []KernelEvent, allEvents []KernelEvent, offset int) *CycleInfo {
+	outerCycle := findOuterCycle(searchEvents)
+	if outerCycle == nil {
+		return nil
+	}
+
+	// Adjust indices for offset
+	if offset > 0 {
+		outerCycle.StartIndex += offset
+		for i := range outerCycle.CycleIndices {
+			outerCycle.CycleIndices[i] += offset
+		}
+	}
+
+	// Look for sub-cycles
+	if outerCycle.CycleLength > 20 {
+		cycleEvents := allEvents[outerCycle.StartIndex : outerCycle.StartIndex+outerCycle.CycleLength]
+		subCycle := findSubCycle(cycleEvents, allEvents, outerCycle)
+		if subCycle != nil {
+			return subCycle
+		}
+	}
+
+	return outerCycle
+}
+
+// getCycleSignature returns a string signature of the cycle's kernel pattern
+// Used to compare if two cycles represent the same or different patterns
+func getCycleSignature(events []KernelEvent, cycle *CycleInfo) string {
+	if cycle == nil || cycle.StartIndex+cycle.CycleLength > len(events) {
+		return ""
+	}
+
+	// Build signature from kernel types in the cycle
+	var sigs []string
+	for i := 0; i < min(cycle.CycleLength, 10); i++ {
+		idx := cycle.StartIndex + i
+		if idx < len(events) {
+			sig := getKernelSignature(events[idx].Name)
+			sigs = append(sigs, sig)
+		}
+	}
+	return strings.Join(sigs, "|")
+}
+
+// detectCycleStandard is the standard cycle detection (used for auto mode)
+func detectCycleStandard(events []KernelEvent, offset int) (*CycleInfo, error) {
 	outerCycle := findOuterCycle(events)
 
-	// Then look for sub-cycles within the outer cycle using type-based matching
+	// Adjust indices if we used an offset
+	if outerCycle != nil && offset > 0 {
+		outerCycle.StartIndex += offset
+		for i := range outerCycle.CycleIndices {
+			outerCycle.CycleIndices[i] += offset
+		}
+	}
+
+	// Look for sub-cycles within the outer cycle
 	if outerCycle != nil && outerCycle.CycleLength > 20 {
 		fmt.Fprintf(os.Stderr, "Found outer cycle: length=%d, repetitions=%d\n",
 			outerCycle.CycleLength, outerCycle.NumCycles)
@@ -175,10 +304,8 @@ func DetectCycleBySignature(events []KernelEvent) (*CycleInfo, error) {
 }
 
 // findOuterCycle finds repeating cycles using exact kernel name matching
-// Uses REPETITION COUNT for phase detection (model-agnostic):
-// - "decode": Find cycle with MOST repetitions (token generation = many iterations)
-// - "prefill": Find cycle with FEWER repetitions (prompt processing = few iterations)
-// - "auto": Same as decode (prefer main workload)
+// Phase detection is done by temporal position (caller passes the right portion of trace)
+// This function finds the cycle with MOST repetitions (most reliable pattern)
 func findOuterCycle(events []KernelEvent) *CycleInfo {
 	// Count kernel occurrences
 	counts := make(map[string]int)
@@ -200,18 +327,10 @@ func findOuterCycle(events []KernelEvent) *CycleInfo {
 		}
 	}
 
-	// Sort by count based on PhaseMode
-	switch PhaseMode {
-	case "prefill":
-		// FEWER repetitions = prefill (prompt processing runs once/few times)
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].count < candidates[j].count
-		})
-	default: // "decode" or "auto" - MORE repetitions = decode (many tokens generated)
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].count > candidates[j].count
-		})
-	}
+	// Sort by count (most repetitions first - most reliable pattern)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].count > candidates[j].count
+	})
 
 	// Find valid cycles, collect all of them
 	type validCycle struct {

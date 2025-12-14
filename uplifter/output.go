@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -44,12 +45,14 @@ func ExtractCycle(events []KernelEvent, cycleInfo *CycleInfo) *CycleResult {
 					IndexInCycle: i,
 					MinDur:       event.Duration,
 					MaxDur:       event.Duration,
+					Durations:    make([]float64, 0, cycleInfo.NumCycles),
 				}
 			}
 
 			stats := kernelStats[i]
 			stats.TotalDur += event.Duration
 			stats.Count++
+			stats.Durations = append(stats.Durations, event.Duration)
 			if event.Duration < stats.MinDur {
 				stats.MinDur = event.Duration
 			}
@@ -64,7 +67,7 @@ func ExtractCycle(events []KernelEvent, cycleInfo *CycleInfo) *CycleResult {
 
 	result.AvgCycleTime = result.TotalCycleTime / float64(cycleInfo.NumCycles)
 
-	// Convert map to sorted slice
+	// Convert map to sorted slice and compute stddev
 	positions := make([]int, 0, len(kernelStats))
 	for pos := range kernelStats {
 		positions = append(positions, pos)
@@ -74,6 +77,17 @@ func ExtractCycle(events []KernelEvent, cycleInfo *CycleInfo) *CycleResult {
 	for _, pos := range positions {
 		stats := kernelStats[pos]
 		stats.AvgDur = stats.TotalDur / float64(stats.Count)
+		// Compute standard deviation
+		if len(stats.Durations) > 1 {
+			var sumSquares float64
+			for _, d := range stats.Durations {
+				diff := d - stats.AvgDur
+				sumSquares += diff * diff
+			}
+			stats.StdDev = math.Sqrt(sumSquares / float64(len(stats.Durations)))
+		}
+		// Clear durations to save memory (we have stddev now)
+		stats.Durations = nil
 		result.Kernels = append(result.Kernels, *stats)
 		result.KernelsByName[stats.Name] = pos
 	}
@@ -93,6 +107,7 @@ func (r *CycleResult) WriteCSV(w io.Writer) error {
 		"avg_duration_us",
 		"min_duration_us",
 		"max_duration_us",
+		"stddev_us",
 		"count",
 		"pct_of_cycle",
 	}
@@ -109,6 +124,7 @@ func (r *CycleResult) WriteCSV(w io.Writer) error {
 			fmt.Sprintf("%.3f", k.AvgDur),
 			fmt.Sprintf("%.3f", k.MinDur),
 			fmt.Sprintf("%.3f", k.MaxDur),
+			fmt.Sprintf("%.3f", k.StdDev),
 			strconv.Itoa(k.Count),
 			fmt.Sprintf("%.4f", pctOfCycle),
 		}
@@ -148,7 +164,8 @@ func (r *CycleResult) WriteSummary(w io.Writer) {
 		k := sorted[i]
 		pct := (k.AvgDur / r.AvgCycleTime) * 100
 		fmt.Fprintf(w, "%2d. [%4d] %s\n", i+1, k.IndexInCycle, truncateString(k.Name, 80))
-		fmt.Fprintf(w, "          Avg: %.2f µs  (%.2f%% of cycle)\n", k.AvgDur, pct)
+		fmt.Fprintf(w, "          Avg: %.2f µs | Min: %.2f | Max: %.2f | StdDev: %.2f  (%.2f%% of cycle)\n",
+			k.AvgDur, k.MinDur, k.MaxDur, k.StdDev, pct)
 	}
 	fmt.Fprintf(w, "\n")
 

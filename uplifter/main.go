@@ -32,6 +32,7 @@ func runCompare(args []string) {
 	outputFile := compareFlags.String("output", "", "Output CSV file path")
 	fullParse := compareFlags.Bool("full", false, "Parse entire trace files (default: early stop)")
 	showSummary := compareFlags.Bool("summary", true, "Print summary to stderr")
+	phase := compareFlags.String("phase", "decode", "Phase to analyze: auto, prefill, decode (default: decode)")
 
 	compareFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Uplifter Compare - Compare kernel cycles between two traces\n\n")
@@ -40,6 +41,7 @@ func runCompare(args []string) {
 		compareFlags.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  uplifter compare -trace1 eager.json.gz -trace2 compiled.json.gz -output compare.csv\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare -trace1 eager.json.gz -trace2 compiled.json.gz -phase prefill -full -output compare.xlsx\n")
 	}
 
 	compareFlags.Parse(args)
@@ -49,6 +51,9 @@ func runCompare(args []string) {
 		compareFlags.Usage()
 		os.Exit(1)
 	}
+
+	// Set global phase mode
+	PhaseMode = *phase
 
 	startTime := time.Now()
 
