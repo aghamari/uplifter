@@ -620,8 +620,19 @@ func getKernelSignature(name string) string {
 	// 3. Dimension suffixes (like _32x256, _128x64)
 	// 4. Common config prefixes (like _1tg_, _ps_)
 	// 5. Trailing numbers (like _0, _1)
+	// 6. rocBLAS Cijk config parameters (everything after _UserArgs_)
 
 	sig := name
+
+	// Special handling for rocBLAS/hipBLASLt Cijk kernels
+	// Format: Cijk_Alik_Bljk_..._UserArgs_MT...
+	// Everything after _UserArgs_ is configuration
+	if strings.HasPrefix(sig, "Cijk_") {
+		if idx := strings.Index(sig, "_UserArgs_"); idx > 0 {
+			sig = sig[:idx+len("_UserArgs")]
+		}
+		return sig
+	}
 
 	// Remove template parameters - find first < and truncate
 	if idx := strings.Index(sig, "<"); idx > 0 {

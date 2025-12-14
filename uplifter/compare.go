@@ -166,11 +166,11 @@ func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
 	}
 
 	// Find best rotation of baseline to maximize LCS
+	// Try rotations even for different-length cycles
 	bestRotation := 0
 	bestLCS := computeLCS(eagerSigs, compiledSigs)
 
-	// Only try rotations if sequences are same length (cycle comparison)
-	if len(eager) == len(compiled) && len(eager) > 0 {
+	if len(eager) > 0 {
 		for rot := 1; rot < len(eager); rot++ {
 			rotatedSigs := rotateSlice(eagerSigs, rot)
 			lcs := computeLCS(rotatedSigs, compiledSigs)
