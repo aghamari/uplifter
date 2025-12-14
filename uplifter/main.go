@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -101,22 +102,24 @@ func runCompareCSV(args []string) {
 func runCycleDetection() {
 	// Define command line flags
 	inputFile := flag.String("input", "", "Path to Perfetto JSON trace file (required)")
-	outputBase := flag.String("output", "", "Output base path (creates _prefill.csv and _decode.csv)")
+	outputBase := flag.String("output", "", "Output base path for CSV files")
 	showSummary := flag.Bool("summary", true, "Print summary to stderr")
+	mode := flag.String("mode", "llm", "Detection mode: 'llm' (prefill/decode) or 'all' (all cycles)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Uplifter - Perfetto trace cycle detector\n\n")
-		fmt.Fprintf(os.Stderr, "Automatically detects both prefill and decode cycles in a trace.\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  %s -input <trace.json.gz> -output <basename>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "This creates two files:\n")
-		fmt.Fprintf(os.Stderr, "  <basename>_prefill.csv  - Prefill phase kernels\n")
-		fmt.Fprintf(os.Stderr, "  <basename>_decode.csv   - Decode phase kernels\n\n")
+		fmt.Fprintf(os.Stderr, "  %s -input <trace.json.gz> -output <basename> [-mode llm|all]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Modes:\n")
+		fmt.Fprintf(os.Stderr, "  llm - Detect prefill and decode phases (default)\n")
+		fmt.Fprintf(os.Stderr, "        Creates: <basename>_prefill.csv, <basename>_decode.csv\n")
+		fmt.Fprintf(os.Stderr, "  all - Output all detected cycle patterns\n")
+		fmt.Fprintf(os.Stderr, "        Creates: <basename>_cycle_1.csv, <basename>_cycle_2.csv, ...\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s -input trace.json.gz -output analysis\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  # Creates: analysis_prefill.csv, analysis_decode.csv\n\n")
+		fmt.Fprintf(os.Stderr, "  %s -input trace.json.gz -output analysis -mode all\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s compare-csv -baseline base_decode.csv -new opt_decode.csv -output compare.xlsx\n", os.Args[0])
 	}
 
@@ -171,14 +174,17 @@ func runCycleDetection() {
 			truncateString(p.Signature, 50))
 	}
 
-	// Step 3: Classify patterns into prefill and decode
-	prefillPattern, decodePattern := classifyPatterns(patterns, len(events))
-
 	detectTime := time.Since(startTime) - parseTime
 	fmt.Fprintf(os.Stderr, "\nCycle detection completed in %v\n", detectTime)
 
-	// Step 4: Extract and output results
-	outputResults(events, prefillPattern, decodePattern, *outputBase, *showSummary)
+	// Step 3: Output based on mode
+	if *mode == "all" {
+		outputAllPatterns(events, patterns, *outputBase, *showSummary)
+	} else {
+		// LLM mode: classify into prefill and decode
+		prefillPattern, decodePattern := classifyPatterns(patterns, len(events))
+		outputResults(events, prefillPattern, decodePattern, *outputBase, *showSummary)
+	}
 
 	totalTime := time.Since(startTime)
 	fmt.Fprintf(os.Stderr, "\nTotal execution time: %v\n", totalTime)
@@ -316,6 +322,49 @@ func outputResults(events []KernelEvent, prefill, decode *CyclePattern, outputBa
 	if outputBase == "" && decode != nil {
 		decodeResult := ExtractCycle(events, decode.Info)
 		decodeResult.WriteCSV(os.Stdout)
+	}
+}
+
+// outputAllPatterns outputs all detected cycle patterns as separate CSV files
+func outputAllPatterns(events []KernelEvent, patterns []CyclePattern, outputBase string, showSummary bool) {
+	if len(patterns) == 0 {
+		fmt.Fprintf(os.Stderr, "No patterns to output\n")
+		return
+	}
+
+	// Sort patterns by center position for consistent ordering
+	sort.Slice(patterns, func(i, j int) bool {
+		return patterns[i].CenterPos < patterns[j].CenterPos
+	})
+
+	fmt.Fprintf(os.Stderr, "\n=== Outputting %d cycle patterns ===\n", len(patterns))
+
+	for i, pattern := range patterns {
+		result := ExtractCycle(events, pattern.Info)
+		centerPct := pattern.CenterPos / float64(len(events)) * 100
+
+		if showSummary {
+			fmt.Fprintf(os.Stderr, "\n--- Cycle %d ---\n", i+1)
+			fmt.Fprintf(os.Stderr, "Length: %d kernels\n", result.CycleLength)
+			fmt.Fprintf(os.Stderr, "Repetitions: %d\n", result.NumCycles)
+			fmt.Fprintf(os.Stderr, "Center: %.1f%% of trace\n", centerPct)
+			fmt.Fprintf(os.Stderr, "Avg Cycle Time: %.2f µs\n", result.AvgCycleTime)
+		}
+
+		if outputBase != "" {
+			filename := fmt.Sprintf("%s_cycle_%d.csv", outputBase, i+1)
+			if err := result.WriteToFile(filename); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", filename, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Written: %s\n", filename)
+			}
+		}
+	}
+
+	// If no output specified, write first pattern to stdout
+	if outputBase == "" && len(patterns) > 0 {
+		result := ExtractCycle(events, patterns[0].Info)
+		result.WriteCSV(os.Stdout)
 	}
 }
 
