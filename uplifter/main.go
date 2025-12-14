@@ -17,6 +17,9 @@ func main() {
 		case "compare-csv":
 			runCompareCSV(os.Args[2:])
 			return
+		case "compare-all":
+			runCompareAll(os.Args[2:])
+			return
 		}
 	}
 
@@ -366,6 +369,77 @@ func outputAllPatterns(events []KernelEvent, patterns []CyclePattern, outputBase
 		result := ExtractCycle(events, patterns[0].Info)
 		result.WriteCSV(os.Stdout)
 	}
+}
+
+func runCompareAll(args []string) {
+	compareFlags := flag.NewFlagSet("compare-all", flag.ExitOnError)
+	baselineDir := compareFlags.String("baseline", "", "Base path for baseline CSVs (e.g., /tmp/baseline)")
+	newDir := compareFlags.String("new", "", "Base path for new CSVs (e.g., /tmp/optimized)")
+	outputFile := compareFlags.String("output", "", "Output XLSX file path")
+
+	compareFlags.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Uplifter Compare All - Compare all cycle pairs in one XLSX\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: uplifter compare-all -baseline <base_path> -new <new_path> -output <file.xlsx>\n\n")
+		fmt.Fprintf(os.Stderr, "This compares matching cycle files:\n")
+		fmt.Fprintf(os.Stderr, "  <base_path>_cycle_1.csv vs <new_path>_cycle_1.csv\n")
+		fmt.Fprintf(os.Stderr, "  <base_path>_cycle_2.csv vs <new_path>_cycle_2.csv\n")
+		fmt.Fprintf(os.Stderr, "  ...\n\n")
+		fmt.Fprintf(os.Stderr, "Output is a single XLSX with one tab per cycle comparison.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		compareFlags.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare-all -baseline /tmp/baseline -new /tmp/optimized -output comparison.xlsx\n")
+	}
+
+	compareFlags.Parse(args)
+
+	if *baselineDir == "" || *newDir == "" || *outputFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: -baseline, -new, and -output are required\n\n")
+		compareFlags.Usage()
+		os.Exit(1)
+	}
+
+	// Find all cycle files
+	var comparisons []*CompareResult
+	var sheetNames []string
+
+	for i := 1; ; i++ {
+		baselineFile := fmt.Sprintf("%s_cycle_%d.csv", *baselineDir, i)
+		newFile := fmt.Sprintf("%s_cycle_%d.csv", *newDir, i)
+
+		// Check if files exist
+		if _, err := os.Stat(baselineFile); os.IsNotExist(err) {
+			break
+		}
+		if _, err := os.Stat(newFile); os.IsNotExist(err) {
+			break
+		}
+
+		fmt.Fprintf(os.Stderr, "Comparing cycle %d...\n", i)
+
+		result, err := CompareFromCSV(baselineFile, newFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error comparing cycle %d: %v\n", i, err)
+			continue
+		}
+
+		comparisons = append(comparisons, result)
+		sheetNames = append(sheetNames, fmt.Sprintf("Cycle %d", i))
+	}
+
+	if len(comparisons) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no cycle files found\n")
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nWriting %d comparisons to %s...\n", len(comparisons), *outputFile)
+
+	if err := WriteMultiCompareXLSX(*outputFile, comparisons, sheetNames); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing XLSX: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Done! Created %s with %d tabs\n", *outputFile, len(comparisons))
 }
 
 // Helper to remove extension from path
