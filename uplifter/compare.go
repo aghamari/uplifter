@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+// CompareMode controls comparison algorithm: "align" or "match"
+// align = position-based LCS alignment (for eager vs compiled)
+// match = signature-based matching (for compiled vs compiled)
+var CompareMode = "match"
+
 // CompareResult holds the comparison between two traces
 type CompareResult struct {
 	EagerName     string
@@ -133,14 +138,123 @@ func analyzeTrace(path string, fullParse bool) (*CycleResult, error) {
 	return result, nil
 }
 
-// matchKernelsBySignature matches kernels using signature-based matching
-// Then outputs in compiled execution order with matched eager kernels
-// Uses greedy signature matching to maximize matches regardless of position
+// matchKernelsBySignature matches kernels using the selected comparison mode
+// align = LCS position-based alignment (for eager vs compiled)
+// match = signature-based matching (for compiled vs compiled)
 func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelMatch {
+	if CompareMode == "align" {
+		return matchByAlignment(eagerResult, compiledResult)
+	}
+	return matchBySignature(eagerResult, compiledResult)
+}
+
+// matchByAlignment uses LCS algorithm for position-based alignment
+// Best for eager vs compiled where kernel order matters
+func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
 	eager := eagerResult.Kernels
 	compiled := compiledResult.Kernels
 
-	// Build signature map for eager kernels
+	// Build signature arrays
+	eagerSigs := make([]string, len(eager))
+	compiledSigs := make([]string, len(compiled))
+	for i, k := range eager {
+		eagerSigs[i] = getKernelSignature(k.Name)
+	}
+	for i, k := range compiled {
+		compiledSigs[i] = getKernelSignature(k.Name)
+	}
+
+	// Compute LCS (Longest Common Subsequence)
+	m, n := len(eager), len(compiled)
+	lcs := make([][]int, m+1)
+	for i := range lcs {
+		lcs[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if eagerSigs[i-1] == compiledSigs[j-1] {
+				lcs[i][j] = lcs[i-1][j-1] + 1
+			} else if lcs[i-1][j] > lcs[i][j-1] {
+				lcs[i][j] = lcs[i-1][j]
+			} else {
+				lcs[i][j] = lcs[i][j-1]
+			}
+		}
+	}
+
+	// Backtrack to find alignment
+	var alignedMatches []KernelMatch
+	i, j := m, n
+
+	for i > 0 || j > 0 {
+		if i > 0 && j > 0 && eagerSigs[i-1] == compiledSigs[j-1] {
+			ek := eager[i-1]
+			ck := compiled[j-1]
+			matchType := "similar"
+			if ek.Name == ck.Name {
+				matchType = "exact"
+			}
+			alignedMatches = append(alignedMatches, KernelMatch{
+				EagerKernels:   []string{ek.Name},
+				CompiledKernel: ck.Name,
+				CompiledDur:    ck.AvgDur,
+				CompiledMin:    ck.MinDur,
+				CompiledMax:    ck.MaxDur,
+				CompiledStdDev: ck.StdDev,
+				EagerDur:       ek.AvgDur,
+				EagerMin:       ek.MinDur,
+				EagerMax:       ek.MaxDur,
+				EagerStdDev:    ek.StdDev,
+				Signature:      eagerSigs[i-1],
+				MatchType:      matchType,
+			})
+			i--
+			j--
+		} else if j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j]) {
+			ck := compiled[j-1]
+			alignedMatches = append(alignedMatches, KernelMatch{
+				EagerKernels:   []string{""},
+				CompiledKernel: ck.Name,
+				CompiledDur:    ck.AvgDur,
+				CompiledMin:    ck.MinDur,
+				CompiledMax:    ck.MaxDur,
+				CompiledStdDev: ck.StdDev,
+				Signature:      compiledSigs[j-1],
+				MatchType:      "new_only",
+			})
+			j--
+		} else {
+			ek := eager[i-1]
+			alignedMatches = append(alignedMatches, KernelMatch{
+				EagerKernels:   []string{ek.Name},
+				CompiledKernel: ".",
+				EagerDur:       ek.AvgDur,
+				EagerMin:       ek.MinDur,
+				EagerMax:       ek.MaxDur,
+				EagerStdDev:    ek.StdDev,
+				Signature:      eagerSigs[i-1],
+				MatchType:      "removed",
+			})
+			i--
+		}
+	}
+
+	// Reverse to get correct order
+	var matches []KernelMatch
+	for k := len(alignedMatches) - 1; k >= 0; k-- {
+		match := alignedMatches[k]
+		match.Index = len(matches)
+		matches = append(matches, match)
+	}
+	return matches
+}
+
+// matchBySignature uses greedy signature matching
+// Best for compiled vs compiled where kernels may move positions
+func matchBySignature(eagerResult, compiledResult *CycleResult) []KernelMatch {
+	eager := eagerResult.Kernels
+	compiled := compiledResult.Kernels
+
 	type eagerEntry struct {
 		idx    int
 		kernel KernelStats
@@ -155,10 +269,7 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 		eagerByName[k.Name] = append(eagerByName[k.Name], entry)
 	}
 
-	// Track matched eager indices
 	matchedEagerIdx := make(map[int]bool)
-
-	// Build matches in compiled order
 	var matches []KernelMatch
 	idx := 0
 
@@ -167,7 +278,6 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 		var matched *eagerEntry
 		matchType := ""
 
-		// First try exact name match
 		if entries, exists := eagerByName[ck.Name]; exists {
 			for i := range entries {
 				if !matchedEagerIdx[entries[i].idx] {
@@ -178,7 +288,6 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 			}
 		}
 
-		// Then try signature match
 		if matched == nil {
 			if entries, exists := eagerBySig[sig]; exists {
 				for i := range entries {
@@ -209,7 +318,6 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 				MatchType:      matchType,
 			})
 		} else {
-			// New in compiled
 			matches = append(matches, KernelMatch{
 				Index:          idx,
 				EagerKernels:   []string{""},
