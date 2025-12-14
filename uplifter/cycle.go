@@ -612,17 +612,40 @@ func verifySubCycleBySignature(signatures []string, startIdx, cycleLen int) bool
 }
 
 // getKernelSignature returns a simplified signature for a kernel name
-// This groups similar kernels together for pattern detection
+// This groups similar kernels together for pattern detection and matching
 func getKernelSignature(name string) string {
 	// Strategy: extract the base kernel name by removing:
 	// 1. Template parameters (content in <>)
 	// 2. Trailing numbers (like _0, _1)
+	// 3. Dimension suffixes (like _32x256, _128x64)
+	// 4. Common config prefixes (like _1tg_, _ps_)
 
 	sig := name
 
 	// Remove template parameters - find first < and truncate
 	if idx := strings.Index(sig, "<"); idx > 0 {
 		sig = sig[:idx]
+	}
+
+	// Remove dimension suffixes like _32x256, _128x64, _NxM pattern
+	// Look for _NUMxNUM at the end
+	for i := len(sig) - 1; i >= 0; i-- {
+		if sig[i] == '_' {
+			suffix := sig[i+1:]
+			// Check if suffix matches NxM or NUMxNUM pattern
+			if isDimensionSuffix(suffix) {
+				sig = sig[:i]
+				break
+			}
+		}
+	}
+
+	// Remove common config suffixes that vary between implementations
+	configSuffixes := []string{"_1tg_ps", "_1tg", "_ps", "_novs", "_vs"}
+	for _, suffix := range configSuffixes {
+		if idx := strings.LastIndex(sig, suffix); idx > 0 {
+			sig = sig[:idx]
+		}
 	}
 
 	// Remove trailing numbers (like _0, _1, _9)
@@ -639,6 +662,29 @@ func getKernelSignature(name string) string {
 	}
 
 	return sig
+}
+
+// isDimensionSuffix checks if a string matches NxM or NUMxNUM pattern (e.g., "32x256")
+func isDimensionSuffix(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+	xIdx := strings.Index(s, "x")
+	if xIdx <= 0 || xIdx >= len(s)-1 {
+		return false
+	}
+	// Check that parts before and after 'x' are numbers
+	for i := 0; i < xIdx; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	for i := xIdx + 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func findKernelPositions(events []KernelEvent, name string) []int {
