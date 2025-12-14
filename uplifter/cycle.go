@@ -616,9 +616,10 @@ func verifySubCycleBySignature(signatures []string, startIdx, cycleLen int) bool
 func getKernelSignature(name string) string {
 	// Strategy: extract the base kernel name by removing:
 	// 1. Template parameters (content in <>)
-	// 2. Trailing numbers (like _0, _1)
+	// 2. Configuration suffixes (GROUP_K_, BLOCK_SIZE_, etc. - common in eager mode)
 	// 3. Dimension suffixes (like _32x256, _128x64)
 	// 4. Common config prefixes (like _1tg_, _ps_)
+	// 5. Trailing numbers (like _0, _1)
 
 	sig := name
 
@@ -627,12 +628,25 @@ func getKernelSignature(name string) string {
 		sig = sig[:idx]
 	}
 
+	// Remove configuration suffixes that appear in eager mode but not compiled
+	// These patterns indicate compile-time parameters
+	configPatterns := []string{
+		"_GROUP_K_", "_GROUP_N_", "_GROUP_SIZE_",
+		"_BLOCK_SIZE_", "_SPLITK_BLOCK_SIZE_",
+		"_NUM_KSPLIT_", "_ACTUAL_KSPLIT_", "_MAX_KSPLIT_",
+		"_GRID_MN_", "_GRID_",
+		"_EVEN_K_", "_cache_modifier_",
+	}
+	for _, pattern := range configPatterns {
+		if idx := strings.Index(sig, pattern); idx > 0 {
+			sig = sig[:idx]
+		}
+	}
+
 	// Remove dimension suffixes like _32x256, _128x64, _NxM pattern
-	// Look for _NUMxNUM at the end
 	for i := len(sig) - 1; i >= 0; i-- {
 		if sig[i] == '_' {
 			suffix := sig[i+1:]
-			// Check if suffix matches NxM or NUMxNUM pattern
 			if isDimensionSuffix(suffix) {
 				sig = sig[:i]
 				break
