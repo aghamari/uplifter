@@ -459,7 +459,8 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 			return nil, fmt.Errorf("failed to read CSV row: %w", err)
 		}
 
-		if len(record) <= avgDurIdx {
+		// Validate both required column indices are within bounds
+		if len(record) <= avgDurIdx || len(record) <= nameIdx {
 			continue
 		}
 
