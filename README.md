@@ -1,20 +1,14 @@
 # Uplifter
 
-A tool for analyzing and comparing Perfetto traces from AMD GPU deep learning workloads. Detects repeating kernel cycles (e.g., transformer layers) and compares different trace versions to identify performance changes.
+A tool for analyzing and comparing Perfetto traces from AMD GPU deep learning workloads. Automatically detects repeating kernel cycles (transformer layers) and compares different trace versions.
 
 ## Features
 
-- **Cycle Detection**: Automatically detects repeating kernel patterns in traces
-- **Phase Detection**: Distinguishes between prefill and decode phases using boundary detection
-- **Trace Comparison**: Compares baseline vs new traces, identifying:
-  - **exact**: Identical kernel names
-  - **similar**: Same kernel type, different parameters
-  - **removed**: Kernels only in baseline (eliminated in new version)
-  - **new_only**: Kernels only in new version (e.g., optimized implementations)
-- **Performance Heatmap**: Change (%) column with color coding (green=faster, red=slower)
+- **Automatic Phase Detection**: Separates prefill and decode phases automatically
+- **Cycle Detection**: Finds repeating kernel patterns (transformer layers)
+- **Trace Comparison**: Compares baseline vs optimized traces
+- **Performance Heatmap**: Color-coded performance changes in XLSX output
 - **Statistics**: Min, max, avg, and stddev for each kernel
-- **Multiple Output Formats**: CSV and Excel (.xlsx) with color-coded match types
-- **Streaming Parser**: Efficiently handles large trace files (100MB+) with early stopping
 
 ## Installation
 
@@ -25,177 +19,112 @@ go build -o uplifter .
 
 Requires Go 1.21+
 
-## Usage
+## Quick Start
 
-### Single Trace Analysis
-
-Extract kernel cycles from a trace:
+### 1. Analyze a Trace
 
 ```bash
-# Basic usage (with early stopping for speed)
-./uplifter -input trace.json.gz -output kernels.csv
-
-# Full parse (slower but more accurate for complex traces)
-./uplifter -input trace.json.gz -output kernels.csv -full
-
-# Specify phase to detect
-./uplifter -input trace.json.gz -output kernels.csv -full -phase decode
-./uplifter -input trace.json.gz -output kernels.csv -full -phase prefill
+./uplifter -input trace.json.gz -output analysis
 ```
 
-### Trace Comparison
+This creates two files:
+- `analysis_prefill.csv` - Prefill phase kernels
+- `analysis_decode.csv` - Decode phase kernels
 
-#### Two-Step Workflow (Recommended)
-
-This is faster for iterative analysis - extract once, compare many times:
+### 2. Compare Two Traces
 
 ```bash
-# Step 1: Extract cycles from each trace (~45s each, one-time)
-./uplifter -input baseline.json.gz -output baseline.csv -full -phase decode
-./uplifter -input new.json.gz -output new.csv -full -phase decode
+# Extract from both traces
+./uplifter -input baseline.json.gz -output baseline
+./uplifter -input optimized.json.gz -output optimized
 
-# Step 2: Compare (instant - ~15ms)
-./uplifter compare-csv -eager baseline.csv -compiled new.csv -output comparison.xlsx
+# Compare decode phases
+./uplifter compare-csv \
+  -baseline baseline_decode.csv \
+  -new optimized_decode.csv \
+  -output decode_comparison.xlsx
 ```
 
-#### Comparing Two Compiled Versions
+## Commands
 
-When comparing two compiled/optimized traces (both have timing data):
+### `uplifter` - Cycle Detection
 
 ```bash
-# Extract both traces
-./uplifter -input baseline_v1.json.gz -output baseline.csv -full -phase decode
-./uplifter -input optimized_v2.json.gz -output new.csv -full -phase decode
-
-# Compare - the -eager flag is for baseline, -compiled is for new version
-./uplifter compare-csv -eager baseline.csv -compiled new.csv -output comparison.xlsx
+./uplifter -input <trace.json.gz> -output <basename>
 ```
 
-#### Comparing Eager vs Compiled
+| Flag | Description |
+|------|-------------|
+| `-input` | Path to Perfetto trace file (.json or .json.gz) |
+| `-output` | Output base path (creates _prefill.csv and _decode.csv) |
 
-When comparing eager mode (may lack timing) vs compiled mode:
+### `uplifter compare-csv` - Compare Traces
 
 ```bash
-./uplifter -input eager.json.gz -output eager.csv -full -phase decode
-./uplifter -input compiled.json.gz -output compiled.csv -full -phase decode
-./uplifter compare-csv -eager eager.csv -compiled compiled.csv -output comparison.xlsx
+./uplifter compare-csv -baseline <file.csv> -new <file.csv> -output <file.xlsx>
 ```
 
-#### One-Step Workflow
+| Flag | Description |
+|------|-------------|
+| `-baseline` | Path to baseline CSV |
+| `-new` | Path to new/optimized CSV |
+| `-output` | Output file (.csv or .xlsx) |
 
-For one-off comparisons (slower, parses both traces each time):
-
-```bash
-./uplifter compare -trace1 baseline.json.gz -trace2 new.json.gz -output comparison.xlsx -full -phase decode
-```
-
-## Phase Detection
-
-The tool uses **boundary detection** to distinguish phases:
-
-| Phase | Characteristic | Detection Method |
-|-------|---------------|------------------|
-| **Prefill** | Processes prompt, longer kernels | Searches first 15% of trace |
-| **Decode** | Token generation, shorter kernels | Searches last 60% of trace |
-
-```bash
--phase prefill  # Find cycle pattern in early part of trace
--phase decode   # Find cycle pattern in later part of trace (default)
--phase auto     # Same as decode
-```
-
-## Output Format
+## Output Formats
 
 ### CSV Output
 
-Includes comprehensive statistics:
-
 ```csv
 index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,count,pct_of_cycle
-0,aiter::fmoe_bf16_blockscaleFp8...,50.499,3.519,61.360,18.892,93,33.02
-1,void vllm::moe::topkGatingSoftmax...,6.064,5.119,6.799,0.408,93,3.97
+0,kernel_a,50.5,45.2,55.8,2.3,1034,33.0
+1,kernel_b,6.1,5.1,6.8,0.4,1034,4.0
 ```
 
-### Excel Output (.xlsx)
+### XLSX Comparison
 
-**Columns:**
-| Baseline Kernel | Base Avg | Base Min | Base Max | Base StdDev | New Kernel | New Avg | New Min | New Max | New StdDev | Change (%) | Match Type |
-
-**Color Coding:**
-
-Row colors (match type):
-- 🟢 **Light Green**: `exact` or `similar` matches
-- 🟡 **Yellow**: `new_only` - kernels only in new version
-- 🔴 **Light Red**: `removed` - kernels only in baseline
+Color-coded Excel file with:
+- **Green rows**: Matched kernels (exact or similar)
+- **Yellow rows**: New kernels (only in optimized version)
+- **Red rows**: Removed kernels (only in baseline)
 
 Change (%) heatmap:
-- 🟢 **Green** (< -5%): Performance improved (new is faster)
-- 🟠 **Orange** (±5%): Similar performance
-- 🔴 **Red** (> +5%): Performance regressed (new is slower)
-- **"NEW"**: New kernel in optimized version
-- **"REMOVED"**: Kernel eliminated (usually optimization)
+- 🟢 **Green**: Faster (improvement >5%)
+- 🟠 **Orange**: Similar (within ±5%)
+- 🔴 **Red**: Slower (regression >5%)
 
-## Command Reference
-
-### `uplifter` (Cycle Detection)
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-input` | Input trace file (required) | - |
-| `-output` | Output file (.csv, .json, .txt) | stdout |
-| `-full` | Parse entire file (vs early stop) | false |
-| `-phase` | Phase to detect: prefill/decode/auto | auto |
-| `-min-cycle` | Minimum cycle length | 50 |
-| `-max-cycle` | Maximum cycle length | 5000 |
-
-### `uplifter compare`
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-trace1` | First trace (baseline) | - |
-| `-trace2` | Second trace (new/optimized) | - |
-| `-output` | Output file (.csv or .xlsx) | stdout |
-| `-full` | Full parse mode | false |
-| `-phase` | Phase to detect | decode |
-
-### `uplifter compare-csv`
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-eager` | Baseline CSV (from uplifter) | - |
-| `-compiled` | New/optimized CSV (from uplifter) | - |
-| `-output` | Output file (.csv or .xlsx) | stdout |
-
-## Supported Trace Formats
-
-- Perfetto JSON traces (`.json`)
-- Gzipped traces (`.json.gz`)
-
-## Example: Full Analysis Workflow
+## Example: Full Analysis
 
 ```bash
-# 1. Extract decode cycles from baseline and new traces
-./uplifter -input baseline.json.gz -output baseline_decode.csv -full -phase decode
-./uplifter -input optimized.json.gz -output new_decode.csv -full -phase decode
+# Analyze baseline
+./uplifter -input baseline.json.gz -output baseline
+# Creates: baseline_prefill.csv, baseline_decode.csv
 
-# 2. Extract prefill cycles
-./uplifter -input baseline.json.gz -output baseline_prefill.csv -full -phase prefill
-./uplifter -input optimized.json.gz -output new_prefill.csv -full -phase prefill
+# Analyze optimized version
+./uplifter -input optimized.json.gz -output optimized
+# Creates: optimized_prefill.csv, optimized_decode.csv
 
-# 3. Compare decode phase
-./uplifter compare-csv -eager baseline_decode.csv -compiled new_decode.csv -output decode_comparison.xlsx
+# Compare decode (main workload)
+./uplifter compare-csv \
+  -baseline baseline_decode.csv \
+  -new optimized_decode.csv \
+  -output decode_comparison.xlsx
 
-# 4. Compare prefill phase
-./uplifter compare-csv -eager baseline_prefill.csv -compiled new_prefill.csv -output prefill_comparison.xlsx
+# Compare prefill
+./uplifter compare-csv \
+  -baseline baseline_prefill.csv \
+  -new optimized_prefill.csv \
+  -output prefill_comparison.xlsx
 
-# 5. Open .xlsx files in Excel to see color-coded performance changes
+# Open XLSX files in Excel to see results
 ```
 
-## Performance Tips
+## Documentation
 
-- Use `-full` flag for accurate cycle detection on complex traces
-- Use two-step workflow (extract CSVs first) for iterative comparisons
-- Early stopping (`-full=false`) is faster but may miss cycles in long traces
+See [docs/CYCLE_DETECTION.md](docs/CYCLE_DETECTION.md) for detailed information about:
+- How cycle detection works
+- Prefill vs decode phase separation
+- Output file formats
+- Troubleshooting
 
 ## License
 

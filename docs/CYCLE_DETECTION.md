@@ -1,314 +1,136 @@
-# Cycle Detection Algorithm
+# Uplifter Cycle Detection
 
-This document provides a detailed explanation of how the `uplifter` tool detects repeating kernel cycles in Perfetto traces and distinguishes between prefill and decode phases.
+Uplifter automatically detects repeating kernel patterns (cycles) in GPU traces and separates them into **prefill** and **decode** phases.
 
-## Overview
+## Quick Start
 
-The cycle detection process has three main stages:
-1. **Find All Cycle Patterns**: Detect all distinct repeating patterns across the entire trace
-2. **Classify by Position**: Group patterns by signature and classify based on temporal position
-3. **Sub-Cycle Detection**: Find smaller repeating patterns within outer cycles (e.g., transformer layers)
+```bash
+# Analyze a trace - creates both prefill and decode CSVs
+./uplifter -input trace.json.gz -output analysis
+# Creates: analysis_prefill.csv, analysis_decode.csv
 
-## Data Structures
-
-### CycleInfo
-
-```go
-type CycleInfo struct {
-    StartIndex   int   // Index where the first complete cycle starts
-    CycleLength  int   // Number of kernels in one cycle
-    NumCycles    int   // Number of complete cycles found
-    CycleIndices []int // Start indices of each detected cycle
-}
+# Compare two versions
+./uplifter compare-csv -baseline baseline_decode.csv -new optimized_decode.csv -output comparison.xlsx
 ```
 
-### CyclePattern
+## What It Detects
 
-```go
-type CyclePattern struct {
-    Info      *CycleInfo
-    Signature string    // Kernel signature for grouping similar patterns
-    StartPos  int       // First occurrence position in trace
-    EndPos    int       // Last occurrence position in trace
-    CenterPos float64   // Average position (for phase classification)
-    Anchor    string    // Anchor kernel name used for detection
-}
-```
+### Prefill vs Decode
 
-## Entry Point: `DetectCycleBySignature`
+In LLM inference, there are two distinct phases:
 
-The main entry point is `DetectCycleBySignature(events []KernelEvent)`. The behavior depends on the global `PhaseMode` variable:
+| Phase | Description | Characteristics |
+|-------|-------------|-----------------|
+| **Prefill** | Processing the input prompt | Happens at the beginning, larger kernels, fewer cycles |
+| **Decode** | Generating output tokens | Happens at the end, smaller kernels, many cycles |
 
-| PhaseMode | Behavior |
-|-----------|----------|
-| `"auto"` | Standard detection (same as decode) |
-| `"decode"` | Find all patterns, select the one with **latest** center position |
-| `"prefill"` | Find all patterns, select the one with **earliest** center position |
+Uplifter automatically separates these by:
+1. Finding ALL repeating kernel patterns in the trace
+2. Filtering to significant patterns (>1% of total events)
+3. Selecting prefill as the pattern with the **earliest** temporal position
+4. Selecting decode as the pattern with the **latest** temporal position
 
-```go
-switch PhaseMode {
-case "prefill", "decode":
-    result, err = detectPhaseByAllCycles(events, PhaseMode)
-    if err != nil || result == nil {
-        // Fallback to standard detection
-        result, err = detectCycleStandard(events, 0)
-    }
-default: // "auto"
-    result, err = detectCycleStandard(events, 0)
-}
-```
+### Sub-Cycles (Layers)
 
----
-
-## Phase Detection: `detectPhaseByAllCycles`
-
-This function finds ALL distinct cycle patterns in the trace, then classifies them by temporal position.
-
-### Rationale
-
-In LLM inference:
-- **Prefill** (prompt processing) happens at the **beginning** of execution
-- **Decode** (token generation) happens at the **end** and dominates execution time
-
-Instead of using fixed percentage boundaries (which can fail if phases overlap), we:
-1. Find ALL cycle patterns across the entire trace
-2. Calculate each pattern's "center position" (average of start and end)
-3. Select based on position: earliest = prefill, latest = decode
-
-### Algorithm
-
-```go
-func detectPhaseByAllCycles(events []KernelEvent, phase string) (*CycleInfo, error) {
-    // 1. Find all distinct cycle patterns
-    patterns := findAllCyclePatterns(events)
-    
-    // 2. Sort by center position (earliest first)
-    sort.Slice(patterns, func(i, j int) bool {
-        return patterns[i].CenterPos < patterns[j].CenterPos
-    })
-    
-    // 3. Select based on phase
-    if phase == "prefill" {
-        return patterns[0].Info, nil  // Earliest center
-    } else {
-        return patterns[len(patterns)-1].Info, nil  // Latest center
-    }
-}
-```
-
-### Example Output
+Within each phase, uplifter finds the smallest repeating unit - typically a single transformer layer:
 
 ```
-Found 7 distinct cycle patterns:
-  1. length=17, reps=93, center=98.9%, sig=void wvSplitK_hf_sml|...
-  2. length=18, reps=3384, center=9.0%, sig=aiter::fmoe_bf16_...
-  3. length=25, reps=1410, center=2.7%, sig=aiter::fmha_fwd_...
-  4. length=17, reps=1034, center=91.5%, sig=void tensorrt_llm::...
-  ...
-Selected DECODE pattern: center=98.9%, length=17, reps=93
+Outer Cycle (full model pass):
+[Layer1][Layer2][Layer3]...[LayerN] [Layer1][Layer2][Layer3]...[LayerN] ...
+
+Sub-Cycle (single layer):
+[Layer1] [Layer1] [Layer1] ...
 ```
 
----
+## Output Files
 
-## Finding All Cycle Patterns: `findAllCyclePatterns`
+### CSV Format
 
-This function finds all distinct repeating patterns in the trace.
-
-### Step 1: Count Kernel Occurrences
-
-```go
-counts := make(map[string]int)
-for _, e := range events {
-    counts[e.Name]++
-}
+```csv
+index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,count,pct_of_cycle
+0,kernel_a,50.5,45.2,55.8,2.3,1034,33.0
+1,kernel_b,6.1,5.1,6.8,0.4,1034,4.0
+...
 ```
 
-### Step 2: Find Anchor Candidates
+| Column | Description |
+|--------|-------------|
+| `index` | Position within the cycle (0-based) |
+| `kernel_name` | Full kernel name |
+| `avg_duration_us` | Average duration in microseconds |
+| `min_duration_us` | Minimum duration |
+| `max_duration_us` | Maximum duration |
+| `stddev_us` | Standard deviation |
+| `count` | Number of times this kernel was observed |
+| `pct_of_cycle` | Percentage of total cycle time |
 
-An "anchor" kernel is one that appears at regular intervals and can be used to identify cycle boundaries.
+### XLSX Comparison Format
 
-**Criteria for candidates:**
-- Must appear at least 5 times
-- Must appear no more than `len(events)/5` times (not too frequent)
+When comparing two traces, the XLSX includes:
 
-```go
-var candidates []candidate
-for name, count := range counts {
-    if count >= 5 && count <= len(events)/5 {
-        estimatedCycleLen := len(events) / count
-        candidates = append(candidates, candidate{name, count, estimatedCycleLen})
-    }
-}
+**Columns:**
+- Baseline Kernel, Base Avg/Min/Max/StdDev
+- New Kernel, New Avg/Min/Max/StdDev  
+- Change (%) - with heatmap coloring
+- Match Type
+
+**Match Types:**
+| Type | Meaning | Color |
+|------|---------|-------|
+| `exact` | Identical kernel names | Green |
+| `similar` | Same kernel type, different parameters | Green |
+| `removed` | Only in baseline (optimized away) | Red |
+| `new_only` | Only in new version (new optimization) | Yellow |
+
+**Change (%) Heatmap:**
+- 🟢 Green: Improved (>5% faster)
+- 🟠 Orange: Neutral (within ±5%)
+- 🔴 Red: Regressed (>5% slower)
+
+## Example Workflow
+
+```bash
+# 1. Extract cycles from baseline trace
+./uplifter -input baseline.json.gz -output baseline
+# Creates: baseline_prefill.csv, baseline_decode.csv
+
+# 2. Extract cycles from optimized trace  
+./uplifter -input optimized.json.gz -output optimized
+# Creates: optimized_prefill.csv, optimized_decode.csv
+
+# 3. Compare decode phases
+./uplifter compare-csv \
+  -baseline baseline_decode.csv \
+  -new optimized_decode.csv \
+  -output decode_comparison.xlsx
+
+# 4. Compare prefill phases
+./uplifter compare-csv \
+  -baseline baseline_prefill.csv \
+  -new optimized_prefill.csv \
+  -output prefill_comparison.xlsx
 ```
 
-### Step 3: Sort Candidates by Repetition Count
+## How Pattern Detection Works
 
-```go
-sort.Slice(candidates, func(i, j int) bool {
-    return candidates[i].count > candidates[j].count
-})
-```
+1. **Count kernel occurrences** - Find kernels that appear multiple times
+2. **Find anchor kernels** - Kernels that appear at regular intervals
+3. **Verify cycles** - Confirm the pattern repeats consistently (95% match)
+4. **Find sub-cycles** - Look for smaller patterns within outer cycles (80% match)
+5. **Calculate positions** - Determine where each pattern occurs in the trace
+6. **Filter by significance** - Keep patterns covering >1% of total events
+7. **Classify phases** - Earliest significant pattern = prefill, latest = decode
 
-### Step 4: Verify Each Candidate
+## Troubleshooting
 
-For each candidate anchor kernel:
+### "No cycle patterns found"
+- The trace may not have repeating patterns
+- Try a longer trace with more iterations
 
-1. **Find all positions** where the kernel appears
-2. **Calculate cycle length** from the first two occurrences
-3. **Verify consistency** - check that all occurrences are evenly spaced (5% tolerance)
-4. **Verify the cycle content** using hash comparison (95% match threshold)
-5. **Look for sub-cycles** if cycle length > 20
+### Prefill and decode look the same
+- The workload may not have distinct phases
+- Check if ISL (input sequence length) and OSL (output sequence length) differ
 
-### Step 5: Group by Signature
-
-Multiple anchors may detect the same pattern. We group by signature and keep the best:
-
-```go
-// Group by signature - keep the one with more repetitions
-if existing, ok := signatureGroups[sig]; ok {
-    if info.NumCycles > existing.Info.NumCycles {
-        signatureGroups[sig] = &CyclePattern{...}
-    }
-} else {
-    signatureGroups[sig] = &CyclePattern{...}
-}
-```
-
-### Step 6: Calculate Temporal Position
-
-For each pattern, we calculate:
-- `StartPos`: First occurrence in trace
-- `EndPos`: Last occurrence + cycle length
-- `CenterPos`: Average of start and end (used for classification)
-
-```go
-startPos := info.StartIndex
-endPos := info.CycleIndices[len(info.CycleIndices)-1] + info.CycleLength
-centerPos := float64(startPos+endPos) / 2.0
-```
-
----
-
-## Cycle Verification: `verifyCycle`
-
-Verifies that the detected pattern actually repeats consistently.
-
-### Algorithm
-
-1. **Hash all kernel names** for fast comparison
-2. **Check each repetition** against the first cycle
-3. **Require 95% match** for a valid repetition
-4. **Return valid cycle** if at least 2 matches found
-
-```go
-// Require 95% match
-if float64(matchCount)/float64(cycleLen) >= 0.95 {
-    matches++
-    cycleIndices = append(cycleIndices, pos)
-}
-```
-
----
-
-## Sub-Cycle Detection: `findSubCycle`
-
-Once an outer cycle is found, this function looks for smaller repeating patterns within it (e.g., transformer layers within a model pass).
-
-### Algorithm
-
-1. **Create kernel signatures** for pattern matching (not exact names)
-2. **Find signatures that repeat** at regular intervals within the cycle
-3. **Verify sub-cycle pattern** with 80% match threshold (more lenient)
-4. **Calculate total repetitions** = sub-cycles per outer cycle × outer cycles
-
-```go
-// Require 80% signature match for sub-cycles
-if float64(matchCount)/float64(cycleLen) >= 0.80 {
-    matches++
-}
-```
-
----
-
-## Kernel Signature Extraction: `getKernelSignature`
-
-Creates simplified kernel names for pattern matching by removing:
-
-1. **Template parameters** (content after `<`)
-2. **Configuration suffixes** (`_GROUP_K_`, `_BLOCK_SIZE_`, etc.)
-3. **Trailing numbers** (`_0`, `_1`, etc.)
-
-### Example Transformations
-
-| Input | Output |
-|-------|--------|
-| `void at::native::kernel<float, 4, true>` | `void at::native::kernel` |
-| `triton_poi_fused_relu_0` | `triton_poi_fused_relu` |
-| `ck_tile::kentry_GROUP_K_128` | `ck_tile::kentry` |
-
----
-
-## Summary: Complete Detection Flow
-
-```
-Input: List of KernelEvent (name, timestamp, duration)
-       PhaseMode: "auto" | "prefill" | "decode"
-
-1. If PhaseMode is "prefill" or "decode":
-   a. Find ALL valid cycles using anchor kernels
-   b. For each anchor that produces a valid cycle:
-      - Verify cycle consistency (5% gap tolerance)
-      - Verify cycle content (95% hash match)
-      - Look for sub-cycles if outer cycle > 20 kernels
-      - Calculate temporal position (start, end, center)
-      - Build signature for grouping
-   
-   c. Group similar patterns by signature
-      - Keep pattern with most repetitions per signature
-   
-   d. Sort patterns by center position
-   
-   e. Select based on phase:
-      - prefill: pattern with EARLIEST center
-      - decode: pattern with LATEST center
-
-2. If "auto" mode:
-   - Use standard detection (most repetitions)
-
-3. Return detected cycle with:
-   - StartIndex: where first cycle begins
-   - CycleLength: number of kernels per cycle
-   - NumCycles: total repetitions found
-   - CycleIndices: start position of each cycle
-```
-
----
-
-## Key Parameters and Thresholds
-
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| Minimum anchor count | 5 | Kernels must appear at least 5 times |
-| Maximum anchor frequency | n/5 | Kernels can't appear more than 20% of total |
-| Cycle length tolerance | 5% | Gap between occurrences can vary by 5% |
-| Outer cycle match | 95% | Cycles must match 95% of kernel names |
-| Sub-cycle match | 80% | Sub-cycles must match 80% of signatures |
-| Minimum sub-cycle length | 5 | Sub-cycles must have at least 5 kernels |
-
----
-
-## Why This Approach Works
-
-### Problem with Fixed Boundaries
-
-The previous approach used fixed percentages (first 15% for prefill, last 60% for decode). This fails when:
-- Prefill is large and extends beyond 15%
-- The prefill pattern appears frequently in the "decode region"
-
-### Solution: Temporal Classification
-
-By finding ALL patterns and classifying by center position:
-- We don't assume where phases start/end
-- Each pattern's temporal span is measured empirically
-- The earliest pattern is prefill, latest is decode
-- Works regardless of phase sizes or overlap
+### Wrong pattern selected
+- Uplifter selects based on temporal position and significance
+- Patterns must cover >1% of trace events to be considered

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -12,9 +13,6 @@ func main() {
 	// Check for subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "compare":
-			runCompare(os.Args[2:])
-			return
 		case "compare-csv":
 			runCompareCSV(os.Args[2:])
 			return
@@ -25,100 +23,32 @@ func main() {
 	runCycleDetection()
 }
 
-func runCompare(args []string) {
-	compareFlags := flag.NewFlagSet("compare", flag.ExitOnError)
-	trace1 := compareFlags.String("trace1", "", "Path to first trace file (e.g., eager mode)")
-	trace2 := compareFlags.String("trace2", "", "Path to second trace file (e.g., compiled mode)")
-	outputFile := compareFlags.String("output", "", "Output CSV file path")
-	fullParse := compareFlags.Bool("full", false, "Parse entire trace files (default: early stop)")
+func runCompareCSV(args []string) {
+	compareFlags := flag.NewFlagSet("compare-csv", flag.ExitOnError)
+	csv1 := compareFlags.String("baseline", "", "Path to baseline CSV")
+	csv2 := compareFlags.String("new", "", "Path to new/optimized CSV")
+	outputFile := compareFlags.String("output", "", "Output file path (.csv or .xlsx)")
 	showSummary := compareFlags.Bool("summary", true, "Print summary to stderr")
-	phase := compareFlags.String("phase", "decode", "Phase to analyze: auto, prefill, decode (default: decode)")
 
 	compareFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Uplifter Compare - Compare kernel cycles between two traces\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: uplifter compare -trace1 <file1> -trace2 <file2> [options]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: uplifter compare-csv -baseline <baseline.csv> -new <new.csv> [options]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		compareFlags.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  uplifter compare -trace1 eager.json.gz -trace2 compiled.json.gz -output compare.csv\n")
-		fmt.Fprintf(os.Stderr, "  uplifter compare -trace1 eager.json.gz -trace2 compiled.json.gz -phase prefill -full -output compare.xlsx\n")
-	}
-
-	compareFlags.Parse(args)
-
-	if *trace1 == "" || *trace2 == "" {
-		fmt.Fprintf(os.Stderr, "Error: -trace1 and -trace2 are required\n\n")
-		compareFlags.Usage()
-		os.Exit(1)
-	}
-
-	// Set global phase mode
-	PhaseMode = *phase
-
-	startTime := time.Now()
-
-	result, err := CompareTraces(*trace1, *trace2, *fullParse)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error comparing traces: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *showSummary {
-		result.WriteSummary(os.Stderr)
-	}
-
-	if *outputFile != "" {
-		if strings.HasSuffix(*outputFile, ".xlsx") {
-			if err := result.WriteCompareXLSX(*outputFile); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing XLSX: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
-			file, err := os.Create(*outputFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
-				os.Exit(1)
-			}
-			defer file.Close()
-
-			if err := result.WriteCompareCSV(file); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing CSV: %v\n", err)
-				os.Exit(1)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "\nResults written to: %s\n", *outputFile)
-	} else {
-		// Write to stdout
-		result.WriteCompareCSV(os.Stdout)
-	}
-
-	fmt.Fprintf(os.Stderr, "Total execution time: %v\n", time.Since(startTime))
-}
-
-func runCompareCSV(args []string) {
-	compareFlags := flag.NewFlagSet("compare-csv", flag.ExitOnError)
-	csv1 := compareFlags.String("eager", "", "Path to eager mode CSV (from uplifter)")
-	csv2 := compareFlags.String("compiled", "", "Path to compiled mode CSV (from uplifter)")
-	outputFile := compareFlags.String("output", "", "Output CSV file path")
-	showSummary := compareFlags.Bool("summary", true, "Print summary to stderr")
-
-	compareFlags.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Uplifter Compare CSV - Fast comparison using pre-extracted CSVs\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: uplifter compare-csv -eager <eager.csv> -compiled <compiled.csv> [options]\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		compareFlags.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  # First extract sub-cycles from each trace:\n")
-		fmt.Fprintf(os.Stderr, "  uplifter -input eager.json.gz -output eager.csv\n")
-		fmt.Fprintf(os.Stderr, "  uplifter -input compiled.json.gz -output compiled.csv\n")
-		fmt.Fprintf(os.Stderr, "\n  # Then compare them:\n")
-		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -eager eager.csv -compiled compiled.csv -output comparison.csv\n")
+		fmt.Fprintf(os.Stderr, "  # Extract cycles from traces:\n")
+		fmt.Fprintf(os.Stderr, "  uplifter -input baseline.json.gz -output baseline\n")
+		fmt.Fprintf(os.Stderr, "  uplifter -input optimized.json.gz -output optimized\n")
+		fmt.Fprintf(os.Stderr, "\n  # Compare decode cycles:\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -baseline baseline_decode.csv -new optimized_decode.csv -output decode.xlsx\n")
+		fmt.Fprintf(os.Stderr, "\n  # Compare prefill cycles:\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -baseline baseline_prefill.csv -new optimized_prefill.csv -output prefill.xlsx\n")
 	}
 
 	compareFlags.Parse(args)
 
 	if *csv1 == "" || *csv2 == "" {
-		fmt.Fprintf(os.Stderr, "Error: -eager and -compiled are required\n\n")
+		fmt.Fprintf(os.Stderr, "Error: -baseline and -new are required\n\n")
 		compareFlags.Usage()
 		os.Exit(1)
 	}
@@ -165,25 +95,23 @@ func runCompareCSV(args []string) {
 func runCycleDetection() {
 	// Define command line flags
 	inputFile := flag.String("input", "", "Path to Perfetto JSON trace file (required)")
-	outputFile := flag.String("output", "", "Output file path (.csv, .json, or .txt for summary)")
-	minCycle := flag.Int("min-cycle", 50, "Minimum cycle length to search for")
-	maxCycle := flag.Int("max-cycle", 5000, "Maximum cycle length to search for")
-	autoDetect := flag.Bool("auto", true, "Use automatic cycle detection (signature-based)")
+	outputBase := flag.String("output", "", "Output base path (creates _prefill.csv and _decode.csv)")
 	showSummary := flag.Bool("summary", true, "Print summary to stderr")
-	normalize := flag.Bool("normalize", false, "Normalize kernel names (strip triton suffix numbers) to detect smaller cycles")
-	fullParse := flag.Bool("full", false, "Parse entire trace file (default: early stop after detecting cycle)")
-	phase := flag.String("phase", "auto", "Phase to detect: 'prefill', 'decode', or 'auto' (auto prefers more repetitions)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Uplifter - Perfetto trace cycle detector and comparator\n\n")
+		fmt.Fprintf(os.Stderr, "Uplifter - Perfetto trace cycle detector\n\n")
+		fmt.Fprintf(os.Stderr, "Automatically detects both prefill and decode cycles in a trace.\n\n")
 		fmt.Fprintf(os.Stderr, "Usage:\n")
-		fmt.Fprintf(os.Stderr, "  %s -input <trace.json> [options]     Detect kernel cycles\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s compare -trace1 <f1> -trace2 <f2> Compare two traces\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Cycle Detection Options:\n")
+		fmt.Fprintf(os.Stderr, "  %s -input <trace.json.gz> -output <basename>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "This creates two files:\n")
+		fmt.Fprintf(os.Stderr, "  <basename>_prefill.csv  - Prefill phase kernels\n")
+		fmt.Fprintf(os.Stderr, "  <basename>_decode.csv   - Decode phase kernels\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s -input trace.json -output kernels.csv\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s compare -trace1 eager.json.gz -trace2 compiled.json.gz\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -input trace.json.gz -output analysis\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Creates: analysis_prefill.csv, analysis_decode.csv\n\n")
+		fmt.Fprintf(os.Stderr, "  %s compare-csv -baseline base_decode.csv -new opt_decode.csv -output compare.xlsx\n", os.Args[0])
 	}
 
 	flag.Parse()
@@ -203,24 +131,12 @@ func runCycleDetection() {
 
 	startTime := time.Now()
 
-	// Step 1: Parse kernel events from the trace
-	var events []KernelEvent
-	var err error
-	
-	if *fullParse {
-		fmt.Fprintf(os.Stderr, "Parsing entire trace file: %s\n", *inputFile)
-		events, err = ParseKernelEvents(*inputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error parsing trace: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "Parsing with early stopping: %s\n", *inputFile)
-		events, err = ParseWithEarlyStop(*inputFile, *minCycle, *maxCycle)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error parsing trace: %v\n", err)
-			os.Exit(1)
-		}
+	// Step 1: Parse kernel events from the trace (always full parse)
+	fmt.Fprintf(os.Stderr, "Parsing trace file: %s\n", *inputFile)
+	events, err := ParseKernelEvents(*inputFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing trace: %v\n", err)
+		os.Exit(1)
 	}
 
 	parseTime := time.Since(startTime)
@@ -231,56 +147,174 @@ func runCycleDetection() {
 		os.Exit(1)
 	}
 
-	// Set normalization mode
-	NormalizeNames = *normalize
-	if *normalize {
-		fmt.Fprintf(os.Stderr, "Kernel name normalization enabled (triton suffixes stripped)\n")
-	}
+	// Step 2: Detect ALL cycle patterns
+	fmt.Fprintf(os.Stderr, "\n=== Detecting cycle patterns ===\n")
+	patterns := findAllCyclePatterns(events)
 
-	// Set phase detection mode
-	PhaseMode = *phase
-	if *phase != "auto" {
-		fmt.Fprintf(os.Stderr, "Phase detection mode: %s\n", *phase)
-	}
-
-	// Step 2: Detect cycles
-	var cycleInfo *CycleInfo
-	if *autoDetect {
-		cycleInfo, err = DetectCycleBySignature(events)
-	} else {
-		cycleInfo, err = DetectCycle(events, *minCycle, *maxCycle)
-	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error detecting cycle: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Try adjusting -min-cycle and -max-cycle parameters, or use -auto=false\n")
+	if len(patterns) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no cycle patterns found\n")
 		os.Exit(1)
 	}
 
+	// Display all patterns
+	fmt.Fprintf(os.Stderr, "Found %d distinct patterns:\n", len(patterns))
+	for i, p := range patterns {
+		fmt.Fprintf(os.Stderr, "  %d. length=%d, reps=%d, center=%.1f%%, sig=%s\n",
+			i+1, p.Info.CycleLength, p.Info.NumCycles,
+			p.CenterPos/float64(len(events))*100,
+			truncateString(p.Signature, 50))
+	}
+
+	// Step 3: Classify patterns into prefill and decode
+	prefillPattern, decodePattern := classifyPatterns(patterns, len(events))
+
 	detectTime := time.Since(startTime) - parseTime
-	fmt.Fprintf(os.Stderr, "Cycle detected in %v\n", detectTime)
+	fmt.Fprintf(os.Stderr, "\nCycle detection completed in %v\n", detectTime)
 
-	// Step 3: Extract cycle statistics
-	result := ExtractCycle(events, cycleInfo)
-
-	// Step 4: Output results
-	if *showSummary {
-		result.WriteSummary(os.Stderr)
-	}
-
-	if *outputFile != "" {
-		err = result.WriteToFile(*outputFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "Results written to: %s\n", *outputFile)
-	} else {
-		// Default: write CSV to stdout
-		result.WriteCSV(os.Stdout)
-	}
+	// Step 4: Extract and output results
+	outputResults(events, prefillPattern, decodePattern, *outputBase, *showSummary)
 
 	totalTime := time.Since(startTime)
 	fmt.Fprintf(os.Stderr, "\nTotal execution time: %v\n", totalTime)
 }
 
+// classifyPatterns selects prefill and decode patterns from all detected patterns
+// Uses a combination of temporal position AND pattern significance (total events covered)
+func classifyPatterns(patterns []CyclePattern, totalEvents int) (*CyclePattern, *CyclePattern) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	// Calculate significance for each pattern (total events covered)
+	type scoredPattern struct {
+		pattern     *CyclePattern
+		significance int // reps * length = total kernel events
+		centerPct   float64
+	}
+	
+	var scored []scoredPattern
+	for i := range patterns {
+		p := &patterns[i]
+		sig := p.Info.NumCycles * p.Info.CycleLength
+		centerPct := p.CenterPos / float64(totalEvents) * 100
+		scored = append(scored, scoredPattern{p, sig, centerPct})
+	}
+
+	// Filter to significant patterns (cover at least 1% of total events)
+	minSignificance := totalEvents / 100
+	var significant []scoredPattern
+	for _, s := range scored {
+		if s.significance >= minSignificance {
+			significant = append(significant, s)
+		}
+	}
+	
+	// If no significant patterns, use all
+	if len(significant) == 0 {
+		significant = scored
+	}
+
+	fmt.Fprintf(os.Stderr, "\nSignificant patterns (>1%% of trace):\n")
+	for _, s := range significant {
+		fmt.Fprintf(os.Stderr, "  - length=%d, reps=%d, events=%d, center=%.1f%%\n",
+			s.pattern.Info.CycleLength, s.pattern.Info.NumCycles, 
+			s.significance, s.centerPct)
+	}
+
+	// Find prefill: significant pattern with earliest center
+	var prefill *CyclePattern
+	minCenter := float64(101) // > 100%
+	for _, s := range significant {
+		if s.centerPct < minCenter {
+			minCenter = s.centerPct
+			prefill = s.pattern
+		}
+	}
+
+	// Find decode: significant pattern with latest center (different from prefill)
+	var decode *CyclePattern
+	maxCenter := float64(-1)
+	for _, s := range significant {
+		// Skip if same signature as prefill
+		if prefill != nil && s.pattern.Signature == prefill.Signature {
+			continue
+		}
+		if s.centerPct > maxCenter {
+			maxCenter = s.centerPct
+			decode = s.pattern
+		}
+	}
+
+	// If we only found one pattern, use it for both
+	if prefill == nil && decode != nil {
+		prefill = decode
+	}
+	if decode == nil && prefill != nil {
+		decode = prefill
+	}
+
+	if prefill != nil {
+		fmt.Fprintf(os.Stderr, "\nPREFILL: length=%d, reps=%d, center=%.1f%%\n",
+			prefill.Info.CycleLength, prefill.Info.NumCycles,
+			prefill.CenterPos/float64(totalEvents)*100)
+	}
+	if decode != nil {
+		fmt.Fprintf(os.Stderr, "DECODE:  length=%d, reps=%d, center=%.1f%%\n",
+			decode.Info.CycleLength, decode.Info.NumCycles,
+			decode.CenterPos/float64(totalEvents)*100)
+	}
+
+	return prefill, decode
+}
+
+func outputResults(events []KernelEvent, prefill, decode *CyclePattern, outputBase string, showSummary bool) {
+	// Extract and write prefill
+	if prefill != nil {
+		prefillResult := ExtractCycle(events, prefill.Info)
+		if showSummary {
+			fmt.Fprintf(os.Stderr, "\n=== PREFILL Cycle Summary ===\n")
+			fmt.Fprintf(os.Stderr, "Cycle Length: %d kernels\n", prefillResult.CycleLength)
+			fmt.Fprintf(os.Stderr, "Number of Cycles: %d\n", prefillResult.NumCycles)
+			fmt.Fprintf(os.Stderr, "Average Cycle Time: %.2f µs\n", prefillResult.AvgCycleTime)
+		}
+		if outputBase != "" {
+			prefillFile := outputBase + "_prefill.csv"
+			if err := prefillResult.WriteToFile(prefillFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing prefill CSV: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Prefill results written to: %s\n", prefillFile)
+			}
+		}
+	}
+
+	// Extract and write decode
+	if decode != nil {
+		decodeResult := ExtractCycle(events, decode.Info)
+		if showSummary {
+			fmt.Fprintf(os.Stderr, "\n=== DECODE Cycle Summary ===\n")
+			fmt.Fprintf(os.Stderr, "Cycle Length: %d kernels\n", decodeResult.CycleLength)
+			fmt.Fprintf(os.Stderr, "Number of Cycles: %d\n", decodeResult.NumCycles)
+			fmt.Fprintf(os.Stderr, "Average Cycle Time: %.2f µs\n", decodeResult.AvgCycleTime)
+		}
+		if outputBase != "" {
+			decodeFile := outputBase + "_decode.csv"
+			if err := decodeResult.WriteToFile(decodeFile); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing decode CSV: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "Decode results written to: %s\n", decodeFile)
+			}
+		}
+	}
+
+	// If no output specified, write decode to stdout
+	if outputBase == "" && decode != nil {
+		decodeResult := ExtractCycle(events, decode.Info)
+		decodeResult.WriteCSV(os.Stdout)
+	}
+}
+
+// Helper to remove extension from path
+func removeExt(path string) string {
+	ext := filepath.Ext(path)
+	return strings.TrimSuffix(path, ext)
+}
