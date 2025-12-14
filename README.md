@@ -6,7 +6,7 @@ A tool for analyzing and comparing Perfetto traces from AMD GPU deep learning wo
 
 - **Automatic Phase Detection**: Separates prefill and decode phases automatically
 - **Cycle Detection**: Finds repeating kernel patterns (transformer layers)
-- **Trace Comparison**: Compares baseline vs optimized traces
+- **Trace Comparison**: Compares baseline vs optimized traces with two matching modes
 - **Performance Heatmap**: Color-coded performance changes in XLSX output
 - **Statistics**: Min, max, avg, and stddev for each kernel
 
@@ -38,11 +38,18 @@ This creates two files:
 ./uplifter -input baseline.json.gz -output baseline
 ./uplifter -input optimized.json.gz -output optimized
 
-# Compare decode phases
+# Compare decode phases (compiled vs compiled)
 ./uplifter compare-csv \
   -baseline baseline_decode.csv \
   -new optimized_decode.csv \
   -output decode_comparison.xlsx
+
+# Compare eager vs compiled (use align mode)
+./uplifter compare-csv \
+  -baseline eager_decode.csv \
+  -new compiled_decode.csv \
+  -mode align \
+  -output eager_vs_compiled.xlsx
 ```
 
 ## Commands
@@ -61,7 +68,7 @@ This creates two files:
 ### `uplifter compare-csv` - Compare Traces
 
 ```bash
-./uplifter compare-csv -baseline <file.csv> -new <file.csv> -output <file.xlsx>
+./uplifter compare-csv -baseline <file.csv> -new <file.csv> [options]
 ```
 
 | Flag | Description |
@@ -69,6 +76,16 @@ This creates two files:
 | `-baseline` | Path to baseline CSV |
 | `-new` | Path to new/optimized CSV |
 | `-output` | Output file (.csv or .xlsx) |
+| `-mode` | Comparison mode: `match` (default) or `align` |
+
+#### Comparison Modes
+
+| Mode | Best For | Algorithm |
+|------|----------|-----------|
+| `match` | Compiled vs Compiled | Signature-based matching - finds best matches regardless of position |
+| `align` | Eager vs Compiled | LCS position-based alignment - shows insertions/deletions in order |
+
+Use `-mode align` when comparing eager mode traces against compiled mode traces, as kernel order differs significantly. Use the default `-mode match` when comparing two compiled traces where kernels may have moved positions but should still match.
 
 ## Output Formats
 
@@ -93,39 +110,45 @@ Change (%) heatmap:
 - 🟠 **Orange**: Similar (within ±5%)
 - 🔴 **Red**: Slower (regression >5%)
 
-## Example: Full Analysis
+## Example Workflows
+
+### Comparing Two Compiled Versions
 
 ```bash
 # Analyze baseline
 ./uplifter -input baseline.json.gz -output baseline
-# Creates: baseline_prefill.csv, baseline_decode.csv
 
 # Analyze optimized version
 ./uplifter -input optimized.json.gz -output optimized
-# Creates: optimized_prefill.csv, optimized_decode.csv
 
-# Compare decode (main workload)
+# Compare decode (main workload) - uses match mode by default
 ./uplifter compare-csv \
   -baseline baseline_decode.csv \
   -new optimized_decode.csv \
   -output decode_comparison.xlsx
+```
 
-# Compare prefill
+### Comparing Eager vs Compiled
+
+```bash
+# Analyze eager mode trace
+./uplifter -input eager.json.gz -output eager
+
+# Analyze compiled mode trace
+./uplifter -input compiled.json.gz -output compiled
+
+# Compare using align mode (preserves execution order)
 ./uplifter compare-csv \
-  -baseline baseline_prefill.csv \
-  -new optimized_prefill.csv \
-  -output prefill_comparison.xlsx
-
-# Open XLSX files in Excel to see results
+  -baseline eager_decode.csv \
+  -new compiled_decode.csv \
+  -mode align \
+  -output eager_vs_compiled.xlsx
 ```
 
 ## Documentation
 
-See [docs/CYCLE_DETECTION.md](docs/CYCLE_DETECTION.md) for detailed information about:
-- How cycle detection works
-- Prefill vs decode phase separation
-- Output file formats
-- Troubleshooting
+- **[Cycle Detection](docs/CYCLE_DETECTION.md)** - How cycle and phase detection works
+- **[Matching Algorithms](docs/MATCHING_ALGORITHMS.md)** - Kernel matching and signature extraction
 
 ## License
 
