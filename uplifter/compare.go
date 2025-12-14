@@ -149,7 +149,8 @@ func matchKernelsBySignature(eagerResult, compiledResult *CycleResult) []KernelM
 }
 
 // matchByAlignment uses LCS algorithm for position-based alignment
-// Best for eager vs compiled where kernel order matters
+// Automatically finds the best rotation of baseline to maximize alignment
+// Best for comparing cycles that may have different starting points
 func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
 	eager := eagerResult.Kernels
 	compiled := compiledResult.Kernels
@@ -164,7 +165,30 @@ func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
 		compiledSigs[i] = getKernelSignature(k.Name)
 	}
 
-	// Compute LCS (Longest Common Subsequence)
+	// Find best rotation of baseline to maximize LCS
+	bestRotation := 0
+	bestLCS := computeLCS(eagerSigs, compiledSigs)
+
+	// Only try rotations if sequences are same length (cycle comparison)
+	if len(eager) == len(compiled) && len(eager) > 0 {
+		for rot := 1; rot < len(eager); rot++ {
+			rotatedSigs := rotateSlice(eagerSigs, rot)
+			lcs := computeLCS(rotatedSigs, compiledSigs)
+			if lcs > bestLCS {
+				bestLCS = lcs
+				bestRotation = rot
+			}
+		}
+
+		if bestRotation > 0 {
+			fmt.Fprintf(os.Stderr, "Detected cycle rotation: baseline rotated by %d positions for best alignment\n", bestRotation)
+			// Rotate both signatures and kernels
+			eagerSigs = rotateSlice(eagerSigs, bestRotation)
+			eager = rotateKernels(eager, bestRotation)
+		}
+	}
+
+	// Compute LCS matrix with (possibly rotated) baseline
 	m, n := len(eager), len(compiled)
 	lcs := make([][]int, m+1)
 	for i := range lcs {
@@ -247,6 +271,53 @@ func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
 		matches = append(matches, match)
 	}
 	return matches
+}
+
+// computeLCS returns the length of the longest common subsequence
+func computeLCS(a, b []string) int {
+	m, n := len(a), len(b)
+	lcs := make([][]int, m+1)
+	for i := range lcs {
+		lcs[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if a[i-1] == b[j-1] {
+				lcs[i][j] = lcs[i-1][j-1] + 1
+			} else if lcs[i-1][j] > lcs[i][j-1] {
+				lcs[i][j] = lcs[i-1][j]
+			} else {
+				lcs[i][j] = lcs[i][j-1]
+			}
+		}
+	}
+	return lcs[m][n]
+}
+
+// rotateSlice rotates a string slice by n positions
+func rotateSlice(s []string, n int) []string {
+	if len(s) == 0 {
+		return s
+	}
+	n = n % len(s)
+	result := make([]string, len(s))
+	for i := range s {
+		result[i] = s[(i+n)%len(s)]
+	}
+	return result
+}
+
+// rotateKernels rotates a KernelStats slice by n positions
+func rotateKernels(k []KernelStats, n int) []KernelStats {
+	if len(k) == 0 {
+		return k
+	}
+	n = n % len(k)
+	result := make([]KernelStats, len(k))
+	for i := range k {
+		result[i] = k[(i+n)%len(k)]
+	}
+	return result
 }
 
 // matchBySignature uses greedy signature matching

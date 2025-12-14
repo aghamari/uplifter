@@ -484,12 +484,23 @@ func findOuterCycle(events []KernelEvent) *CycleInfo {
 		return nil
 	}
 
-	// Return cycle with MOST repetitions (most reliable pattern)
-	sort.Slice(validCycles, func(i, j int) bool {
-		return validCycles[i].info.NumCycles > validCycles[j].info.NumCycles
-	})
-	fmt.Fprintf(os.Stderr, "Found outer cycle: %d reps (anchor: %s)\n",
-		validCycles[0].info.NumCycles, truncateName(validCycles[0].anchor, 40))
+	// Sort valid cycles by repetition count
+	switch PhaseMode {
+	case "prefill":
+		// Return cycle with FEWEST repetitions
+		sort.Slice(validCycles, func(i, j int) bool {
+			return validCycles[i].info.NumCycles < validCycles[j].info.NumCycles
+		})
+		fmt.Fprintf(os.Stderr, "Found PREFILL cycle: %d reps (anchor: %s)\n",
+			validCycles[0].info.NumCycles, truncateName(validCycles[0].anchor, 40))
+	default: // "decode" or "auto"
+		// Return cycle with MOST repetitions
+		sort.Slice(validCycles, func(i, j int) bool {
+			return validCycles[i].info.NumCycles > validCycles[j].info.NumCycles
+		})
+		fmt.Fprintf(os.Stderr, "Found DECODE cycle: %d reps (anchor: %s)\n",
+			validCycles[0].info.NumCycles, truncateName(validCycles[0].anchor, 40))
+	}
 
 	return validCycles[0].info
 }
