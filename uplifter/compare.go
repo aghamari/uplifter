@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,12 +18,16 @@ var CompareMode = "align"
 
 // CompareResult holds the comparison between two traces
 type CompareResult struct {
-	EagerName     string
-	CompiledName  string
-	EagerCycle    int
-	CompiledCycle int
-	Matches       []KernelMatch
-	TotalTime     float64 // Total time in compiled mode
+	EagerName        string
+	CompiledName     string
+	EagerCycle       int
+	CompiledCycle    int
+	Matches          []KernelMatch
+	TotalTime        float64 // Total time in compiled mode
+	BaselineIters    int     // Number of cycle iterations in baseline
+	NewIters         int     // Number of cycle iterations in new
+	BaselineCycleTime float64 // Average cycle time in baseline (µs)
+	NewCycleTime     float64 // Average cycle time in new (µs)
 }
 
 // KernelMatch represents a matched pair of kernels between two traces
@@ -500,27 +505,27 @@ func (r *CompareResult) WriteCompareCSV(w io.Writer) error {
 }
 
 // CompareFromCSV compares two pre-extracted CSV files (much faster than raw traces)
-// csv1 = eager mode, csv2 = compiled mode
+// csv1 = baseline, csv2 = new
 func CompareFromCSV(csv1Path, csv2Path string) (*CompareResult, error) {
 	startTotal := time.Now()
 
 	fmt.Fprintf(os.Stderr, "=== Reading eager CSV: %s ===\n", filepath.Base(csv1Path))
-	eagerKernels, err := readKernelsFromCSV(csv1Path)
+	eagerData, err := readKernelsFromCSV(csv1Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read eager CSV: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Read %d kernels\n", len(eagerKernels))
+	fmt.Fprintf(os.Stderr, "Read %d kernels\n", len(eagerData.Kernels))
 
 	fmt.Fprintf(os.Stderr, "=== Reading compiled CSV: %s ===\n", filepath.Base(csv2Path))
-	compiledKernels, err := readKernelsFromCSV(csv2Path)
+	compiledData, err := readKernelsFromCSV(csv2Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read compiled CSV: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Read %d kernels\n", len(compiledKernels))
+	fmt.Fprintf(os.Stderr, "Read %d kernels\n", len(compiledData.Kernels))
 
 	// Create CycleResult structures for matching
-	eagerResult := &CycleResult{Kernels: eagerKernels, CycleLength: len(eagerKernels)}
-	compiledResult := &CycleResult{Kernels: compiledKernels, CycleLength: len(compiledKernels)}
+	eagerResult := &CycleResult{Kernels: eagerData.Kernels, CycleLength: len(eagerData.Kernels)}
+	compiledResult := &CycleResult{Kernels: compiledData.Kernels, CycleLength: len(compiledData.Kernels)}
 
 	fmt.Fprintf(os.Stderr, "\n=== Matching kernels ===\n")
 	matches := matchKernelsBySignature(eagerResult, compiledResult)
@@ -533,17 +538,28 @@ func CompareFromCSV(csv1Path, csv2Path string) (*CompareResult, error) {
 	fmt.Fprintf(os.Stderr, "Matching done in %v\n", time.Since(startTotal))
 
 	return &CompareResult{
-		EagerName:     filepath.Base(csv1Path),
-		CompiledName:  filepath.Base(csv2Path),
-		EagerCycle:    len(eagerKernels),
-		CompiledCycle: len(compiledKernels),
-		Matches:       matches,
-		TotalTime:     totalTime,
+		EagerName:         filepath.Base(csv1Path),
+		CompiledName:      filepath.Base(csv2Path),
+		EagerCycle:        len(eagerData.Kernels),
+		CompiledCycle:     len(compiledData.Kernels),
+		Matches:           matches,
+		TotalTime:         totalTime,
+		BaselineIters:     eagerData.Iterations,
+		NewIters:          compiledData.Iterations,
+		BaselineCycleTime: eagerData.AvgCycleTime,
+		NewCycleTime:      compiledData.AvgCycleTime,
 	}, nil
 }
 
 // readKernelsFromCSV reads kernel stats from a CSV file produced by uplifter
-func readKernelsFromCSV(path string) ([]KernelStats, error) {
+// CSVData holds kernels and metadata from a CSV file
+type CSVData struct {
+	Kernels      []KernelStats
+	Iterations   int
+	AvgCycleTime float64
+}
+
+func readKernelsFromCSV(path string) (*CSVData, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -551,14 +567,46 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1 // Allow variable fields for metadata rows
 
-	// Read header
-	header, err := reader.Read()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	result := &CSVData{}
+
+	// Read rows, looking for metadata and data
+	var header []string
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CSV row: %w", err)
+		}
+
+		// Skip empty rows
+		if len(record) == 0 {
+			continue
+		}
+
+		// Parse metadata rows (start with #)
+		if len(record) >= 2 && strings.HasPrefix(record[0], "#") {
+			key := strings.TrimPrefix(record[0], "# ")
+			switch key {
+			case "Iterations":
+				result.Iterations, _ = strconv.Atoi(record[1])
+			case "Avg cycle time (us)":
+				result.AvgCycleTime, _ = strconv.ParseFloat(record[1], 64)
+			}
+			continue
+		}
+
+		// Check if this is the header row
+		if len(record) >= 2 && record[0] == "index" {
+			header = record
+			break
+		}
 	}
 
-	// Find column indices
+	// Find column indices from header
 	nameIdx := -1
 	avgDurIdx := -1
 	minDurIdx := -1
@@ -583,7 +631,6 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 		return nil, fmt.Errorf("CSV missing required columns (kernel_name, avg_duration_us)")
 	}
 
-	var kernels []KernelStats
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -625,10 +672,10 @@ func readKernelsFromCSV(path string) ([]KernelStats, error) {
 			}
 		}
 
-		kernels = append(kernels, k)
+		result.Kernels = append(result.Kernels, k)
 	}
 
-	return kernels, nil
+	return result, nil
 }
 
 // WriteSummary writes a human-readable comparison summary

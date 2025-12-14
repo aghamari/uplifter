@@ -94,10 +94,38 @@ func writeComparisonToSheet(f *excelize.File, sheetName string, r *CompareResult
 	f.SetColWidth(sheetName, "K", "K", 12)
 	f.SetColWidth(sheetName, "L", "L", 15)
 
-	// Write summary row
-	f.SetCellValue(sheetName, "A2", fmt.Sprintf("Total (%d baseline kernels)", r.EagerCycle))
-	f.SetCellValue(sheetName, "F2", fmt.Sprintf("(%d new kernels)", r.CompiledCycle))
+	// Write summary row with cycle stats
+	baselineInfo := fmt.Sprintf("Baseline: %d kernels", r.EagerCycle)
+	if r.BaselineIters > 0 {
+		baselineInfo += fmt.Sprintf(" × %d iters", r.BaselineIters)
+	}
+	if r.BaselineCycleTime > 0 {
+		baselineInfo += fmt.Sprintf(", %.1f µs/cycle", r.BaselineCycleTime)
+	}
+	f.SetCellValue(sheetName, "A2", baselineInfo)
+
+	newInfo := fmt.Sprintf("New: %d kernels", r.CompiledCycle)
+	if r.NewIters > 0 {
+		newInfo += fmt.Sprintf(" × %d iters", r.NewIters)
+	}
+	if r.NewCycleTime > 0 {
+		newInfo += fmt.Sprintf(", %.1f µs/cycle", r.NewCycleTime)
+	}
+	f.SetCellValue(sheetName, "F2", newInfo)
 	f.SetCellValue(sheetName, "G2", r.TotalTime)
+
+	// Show cycle time improvement if both have stats
+	if r.BaselineCycleTime > 0 && r.NewCycleTime > 0 {
+		changePercent := ((r.NewCycleTime - r.BaselineCycleTime) / r.BaselineCycleTime) * 100
+		f.SetCellValue(sheetName, "K2", changePercent)
+		if changePercent < -5 {
+			f.SetCellStyle(sheetName, "K2", "K2", styles.improved)
+		} else if changePercent > 5 {
+			f.SetCellStyle(sheetName, "K2", "K2", styles.regressed)
+		} else {
+			f.SetCellStyle(sheetName, "K2", "K2", styles.neutral)
+		}
+	}
 
 	// Write data rows
 	row := 3

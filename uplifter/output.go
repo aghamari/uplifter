@@ -100,6 +100,21 @@ func (r *CycleResult) WriteCSV(w io.Writer) error {
 	writer := csv.NewWriter(w)
 	defer writer.Flush()
 
+	// Write cycle metadata as comment rows
+	metaRows := [][]string{
+		{"# Cycle Statistics"},
+		{"# Iterations", strconv.Itoa(r.NumCycles)},
+		{"# Kernels per cycle", strconv.Itoa(r.CycleLength)},
+		{"# Avg cycle time (us)", fmt.Sprintf("%.3f", r.AvgCycleTime)},
+		{"# Total time (us)", fmt.Sprintf("%.3f", r.TotalCycleTime)},
+		{}, // Empty row before data
+	}
+	for _, row := range metaRows {
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+
 	// Write header
 	headers := []string{
 		"index",
