@@ -614,30 +614,15 @@ func verifySubCycleBySignature(signatures []string, startIdx, cycleLen int) bool
 // getKernelSignature returns a simplified signature for a kernel name
 // This groups similar kernels together for pattern detection
 func getKernelSignature(name string) string {
-	// Generic signature extraction without hardcoding kernel names
 	// Strategy: extract the base kernel name by removing:
 	// 1. Template parameters (content in <>)
-	// 2. Configuration suffixes (like _GROUP_K_128_...)
-	// 3. Trailing numbers
+	// 2. Trailing numbers (like _0, _1)
 
 	sig := name
 
 	// Remove template parameters - find first < and truncate
 	if idx := strings.Index(sig, "<"); idx > 0 {
 		sig = sig[:idx]
-	}
-
-	// Remove common configuration suffixes
-	// These patterns typically indicate compile-time parameters, not different kernels
-	configPatterns := []string{
-		"_GROUP_K_", "_GROUP_N_", "_BLOCK_SIZE_", "_GRID_",
-		"_MT", "_MI", "_SN_", "_AFC", "_LDSB", "_LPA", "_LPB",
-		"_UserArgs_", "_shortname",
-	}
-	for _, pattern := range configPatterns {
-		if idx := strings.Index(sig, pattern); idx > 0 {
-			sig = sig[:idx]
-		}
 	}
 
 	// Remove trailing numbers (like _0, _1, _9)

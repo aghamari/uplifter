@@ -187,11 +187,11 @@ func classifyPatterns(patterns []CyclePattern, totalEvents int) (*CyclePattern, 
 
 	// Calculate significance for each pattern (total events covered)
 	type scoredPattern struct {
-		pattern     *CyclePattern
+		pattern      *CyclePattern
 		significance int // reps * length = total kernel events
-		centerPct   float64
+		centerPct    float64
 	}
-	
+
 	var scored []scoredPattern
 	for i := range patterns {
 		p := &patterns[i]
@@ -208,7 +208,7 @@ func classifyPatterns(patterns []CyclePattern, totalEvents int) (*CyclePattern, 
 			significant = append(significant, s)
 		}
 	}
-	
+
 	// If no significant patterns, use all
 	if len(significant) == 0 {
 		significant = scored
@@ -217,7 +217,7 @@ func classifyPatterns(patterns []CyclePattern, totalEvents int) (*CyclePattern, 
 	fmt.Fprintf(os.Stderr, "\nSignificant patterns (>1%% of trace):\n")
 	for _, s := range significant {
 		fmt.Fprintf(os.Stderr, "  - length=%d, reps=%d, events=%d, center=%.1f%%\n",
-			s.pattern.Info.CycleLength, s.pattern.Info.NumCycles, 
+			s.pattern.Info.CycleLength, s.pattern.Info.NumCycles,
 			s.significance, s.centerPct)
 	}
 
