@@ -29,7 +29,11 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 	})
 
 	exactStyle, _ := f.NewStyle(&excelize.Style{
-		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E2EFDA"}, Pattern: 1}, // Light green
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#E2EFDA"}, Pattern: 1}, // Light green - exact match
+	})
+
+	similarStyle, _ := f.NewStyle(&excelize.Style{
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#DDEBF7"}, Pattern: 1}, // Light blue - similar match
 	})
 
 	removedStyle, _ := f.NewStyle(&excelize.Style{
@@ -144,9 +148,12 @@ func (r *CompareResult) WriteCompareXLSX(filename string) error {
 
 		// Apply row style based on match type (excluding change column)
 		switch m.MatchType {
-		case "exact", "similar":
+		case "exact":
 			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), exactStyle)
 			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), exactStyle)
+		case "similar":
+			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), similarStyle)
+			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), similarStyle)
 		case "removed":
 			f.SetCellStyle(sheetName, fmt.Sprintf("A%d", row), fmt.Sprintf("J%d", row), removedStyle)
 			f.SetCellStyle(sheetName, fmt.Sprintf("L%d", row), fmt.Sprintf("L%d", row), removedStyle)
