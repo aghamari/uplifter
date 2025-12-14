@@ -8,6 +8,9 @@ Uplifter provides two matching algorithms for comparing kernel cycles between tr
 |-----------------|------|---------|
 | Compiled vs Compiled | `match` (default) | `compare-csv -baseline a.csv -new b.csv` |
 | Eager vs Compiled | `align` | `compare-csv -baseline eager.csv -new compiled.csv -mode align` |
+| Same trace, different cycles | `align` | `compare-csv -baseline cycle_1.csv -new cycle_3.csv -mode align` |
+
+---
 
 ## Mode 1: Signature-Based Matching (`-mode match`)
 
@@ -65,26 +68,56 @@ func matchBySignature(eagerResult, compiledResult *CycleResult) []KernelMatch {
 
 ## Mode 2: Position-Based Alignment (`-mode align`)
 
-Best for comparing eager vs compiled traces where kernel order matters and you want to see insertions/deletions in-place.
+Best for comparing traces where kernel order matters. Includes **automatic cycle rotation detection**.
 
 ### How It Works
 
-Uses **Longest Common Subsequence (LCS)** algorithm to find the optimal alignment between two kernel sequences, similar to `diff`.
-
-1. **Build signature arrays** for both sequences
-2. **Compute LCS matrix** using dynamic programming
-3. **Backtrack** to produce aligned output showing:
+1. **Detect rotation** (for same-length cycles):
+   - Try all rotations of baseline
+   - Find rotation with maximum LCS alignment
+2. **Build signature arrays** for both sequences
+3. **Compute LCS matrix** using dynamic programming
+4. **Backtrack** to produce aligned output showing:
    - Matches (kernels in both sequences)
    - Insertions (kernels only in new)
    - Deletions (kernels only in baseline)
 
-### Algorithm (from `compare.go`)
+### Automatic Rotation Detection
+
+When comparing cycles of the same length, the algorithm automatically finds the best rotation:
+
+```go
+// From matchByAlignment()
+// Find best rotation of baseline to maximize LCS
+bestRotation := 0
+bestLCS := computeLCS(eagerSigs, compiledSigs)
+
+if len(eager) == len(compiled) && len(eager) > 0 {
+    for rot := 1; rot < len(eager); rot++ {
+        rotatedSigs := rotateSlice(eagerSigs, rot)
+        lcs := computeLCS(rotatedSigs, compiledSigs)
+        if lcs > bestLCS {
+            bestLCS = lcs
+            bestRotation = rot
+        }
+    }
+
+    if bestRotation > 0 {
+        fmt.Fprintf(os.Stderr, "Detected cycle rotation: baseline rotated by %d positions\n", bestRotation)
+        eagerSigs = rotateSlice(eagerSigs, bestRotation)
+        eager = rotateKernels(eager, bestRotation)
+    }
+}
+```
+
+**Why rotation matters:** Cycle detection may pick different anchor kernels in different traces, causing the same cycle to start at different positions. Rotation detection ensures optimal alignment.
+
+### LCS Algorithm (from `compare.go`)
 
 ```go
 // matchByAlignment uses LCS algorithm for position-based alignment
-// Best for eager vs compiled where kernel order matters
 func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
-    // 1. Compute LCS matrix
+    // Compute LCS matrix
     // lcs[i][j] = length of LCS of eagerSigs[0:i] and compiledSigs[0:j]
     for i := 1; i <= m; i++ {
         for j := 1; j <= n; j++ {
@@ -96,7 +129,7 @@ func matchByAlignment(eagerResult, compiledResult *CycleResult) []KernelMatch {
         }
     }
 
-    // 2. Backtrack to find alignment
+    // Backtrack to find alignment
     for i > 0 || j > 0 {
         if signatures match {
             // Match (exact or similar)
@@ -119,6 +152,7 @@ Interleaved in execution order:
 ### When to Use
 
 - Comparing eager mode vs compiled mode
+- Comparing different cycles from the same trace (`-mode all`)
 - When you want to see exactly where kernels were added/removed
 - When execution order is meaningful
 
@@ -177,28 +211,11 @@ func getKernelSignature(name string) string {
 
     // 3. Remove dimension suffixes (NxM pattern)
     // e.g., _32x256, _128x64
-    for i := len(sig) - 1; i >= 0; i-- {
-        if sig[i] == '_' {
-            suffix := sig[i+1:]
-            if isDimensionSuffix(suffix) {
-                sig = sig[:i]
-                break
-            }
-        }
-    }
 
     // 4. Remove config suffixes
     configSuffixes := []string{"_1tg_ps", "_1tg", "_ps", "_novs", "_vs"}
-    for _, suffix := range configSuffixes {
-        if idx := strings.LastIndex(sig, suffix); idx > 0 {
-            sig = sig[:idx]
-        }
-    }
 
     // 5. Remove trailing numbers
-    for len(sig) > 2 && sig[len(sig)-1] >= '0' && sig[len(sig)-1] <= '9' && sig[len(sig)-2] == '_' {
-        sig = sig[:len(sig)-2]
-    }
 
     return strings.TrimRight(sig, "_")
 }
@@ -211,7 +228,7 @@ func getKernelSignature(name string) string {
 | Type | Meaning | XLSX Color |
 |------|---------|------------|
 | `exact` | Identical kernel names | Light Green |
-| `similar` | Same signature, different name | Light Blue |
+| `similar` | Same signature, different name (e.g., different template params) | Light Blue |
 | `new_only` | Only in new trace | Light Yellow |
 | `removed` | Only in baseline trace | Light Red |
 
@@ -237,13 +254,31 @@ Special values:
 
 ### Use `match` (default) when:
 - ✅ Comparing two compiled traces
-- ✅ Kernels may have reordered
+- ✅ Kernels may have reordered significantly
 - ✅ Kernel names might have slight config changes
-- ✅ You want maximum matching
+- ✅ You want maximum matching regardless of position
 
 ### Use `align` when:
 - ✅ Comparing eager vs compiled
+- ✅ Comparing different cycle patterns from same trace
 - ✅ Execution order is meaningful
 - ✅ You want to see exactly where kernels were fused/split
 - ✅ Creating a diff-like view
 
+---
+
+## Order Preservation Metric
+
+To determine if `align` mode will work well, calculate:
+
+```
+Order Preservation = LCS Length / Signature Matches × 100%
+```
+
+| Preservation | Recommendation |
+|--------------|----------------|
+| >90% | Use `align` mode |
+| 70-90% | Either mode works |
+| <70% | Use `match` mode |
+
+Low order preservation indicates significant reordering, where `match` mode will find more pairings.

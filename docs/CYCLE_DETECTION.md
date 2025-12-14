@@ -1,28 +1,59 @@
 # Cycle Detection Algorithm
 
-Uplifter automatically detects repeating kernel patterns (cycles) in GPU traces and separates them into **prefill** and **decode** phases.
+Uplifter automatically detects repeating kernel patterns (cycles) in GPU traces. It supports two modes: LLM mode (prefill/decode) and All mode (all patterns).
 
 ## Quick Start
 
 ```bash
-# Analyze a trace - creates both prefill and decode CSVs
+# LLM mode (default) - detects prefill and decode phases
 ./uplifter -input trace.json.gz -output analysis
 # Creates: analysis_prefill.csv, analysis_decode.csv
+
+# All mode - outputs all detected cycle patterns
+./uplifter -input trace.json.gz -output analysis -mode all
+# Creates: analysis_cycle_1.csv, analysis_cycle_2.csv, ...
 
 # Compare two versions
 ./uplifter compare-csv -baseline baseline_decode.csv -new optimized_decode.csv -output comparison.xlsx
 ```
 
+---
+
+## Detection Modes
+
+### LLM Mode (`-mode llm`, default)
+
+Designed for LLM inference traces. Automatically classifies patterns into:
+
+| Phase | Description | Selection Criteria |
+|-------|-------------|-------------------|
+| **Prefill** | Processing input prompt | Earliest significant pattern |
+| **Decode** | Generating output tokens | Latest significant pattern |
+
+### All Mode (`-mode all`)
+
+Outputs all detected cycle patterns without classification:
+
+```bash
+./uplifter -input trace.json.gz -output analysis -mode all
+
+# Output:
+# analysis_cycle_1.csv (center: 2.7%, 1410 reps)
+# analysis_cycle_2.csv (center: 9.0%, 3384 reps)
+# analysis_cycle_3.csv (center: 66.3%, 752 reps)
+# ...
+```
+
+Patterns are sorted by temporal position (center of cycle in trace).
+
+**Use All mode when:**
+- Trace has multiple distinct workload phases
+- Prefill/decode classification doesn't make sense
+- You want to analyze all patterns in the trace
+
+---
+
 ## What It Detects
-
-### Prefill vs Decode
-
-In LLM inference, there are two distinct phases:
-
-| Phase | Description | Characteristics |
-|-------|-------------|-----------------|
-| **Prefill** | Processing the input prompt | Happens at the beginning, larger kernels, fewer cycles |
-| **Decode** | Generating output tokens | Happens at the end, smaller kernels, many cycles |
 
 ### Sub-Cycles (Layers)
 
@@ -135,33 +166,31 @@ if float64(matchCount)/float64(cycleLen) >= 0.80 {
 
 ---
 
-## Phase Detection
+## Phase Classification (LLM Mode)
 
-Phase detection uses the `detectPhaseByAllCycles()` function.
+Phase detection uses temporal position and significance.
 
 ### Algorithm
 
 1. **Find ALL distinct cycle patterns** in the trace
-2. **Group by signature** (kernel composition)
+2. **Filter by significance** (patterns covering >1% of trace events)
 3. **Calculate temporal center** for each pattern
 4. **Classify by position:**
-   - Earliest center position → **Prefill**
-   - Latest center position → **Decode**
+   - Earliest significant center → **Prefill**
+   - Latest significant center → **Decode**
 
 ```go
-// From detectPhaseByAllCycles()
-patterns := findAllCyclePatterns(events)
-
-// Sort patterns by center position (earlier first)
-sort.Slice(patterns, func(i, j int) bool {
-    return patterns[i].CenterPos < patterns[j].CenterPos
-})
-
-if phase == "prefill" {
-    return patterns[0].Info  // Earliest
-} else {
-    return patterns[len(patterns)-1].Info  // Latest
+// From classifyPatterns()
+// Filter to significant patterns (cover at least 1% of total events)
+minSignificance := totalEvents / 100
+for _, s := range scored {
+    if s.significance >= minSignificance {
+        significant = append(significant, s)
+    }
 }
+
+// Find prefill: significant pattern with earliest center
+// Find decode: significant pattern with latest center
 ```
 
 ### Temporal Position Calculation
@@ -171,22 +200,6 @@ if phase == "prefill" {
 startPos := info.StartIndex
 endPos := info.CycleIndices[len(info.CycleIndices)-1] + info.CycleLength
 centerPos := float64(startPos + endPos) / 2.0
-```
-
-### Cycle Signature
-
-Cycles are grouped by their kernel composition:
-
-```go
-// From getCycleSignature()
-// Build signature from first 10 kernel types in the cycle
-var sigs []string
-for i := 0; i < min(cycle.CycleLength, 10); i++ {
-    idx := cycle.StartIndex + i
-    sig := getKernelSignature(events[idx].Name)
-    sigs = append(sigs, sig)
-}
-return strings.Join(sigs, "|")
 ```
 
 ---
@@ -217,23 +230,6 @@ configPatterns := []string{
 }
 
 configSuffixes := []string{"_1tg_ps", "_1tg", "_ps", "_novs", "_vs"}
-```
-
-### Dimension Detection
-
-```go
-// isDimensionSuffix checks for NxM pattern (e.g., "32x256")
-func isDimensionSuffix(s string) bool {
-    xIdx := strings.Index(s, "x")
-    // Verify digits before and after 'x'
-    for i := 0; i < xIdx; i++ {
-        if s[i] < '0' || s[i] > '9' { return false }
-    }
-    for i := xIdx + 1; i < len(s); i++ {
-        if s[i] < '0' || s[i] > '9' { return false }
-    }
-    return true
-}
 ```
 
 ---
@@ -272,6 +268,7 @@ index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,coun
 | Sub-cycle match | 80% | `verifySubCyclePattern()` |
 | Min cycle length | 10 | `findAllCyclePatterns()` |
 | Min sub-cycle reps | 3 | `findSubCycle()` |
+| Significance threshold | 1% of events | `classifyPatterns()` |
 
 ---
 
@@ -286,18 +283,18 @@ index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,coun
 ### Prefill and decode look the same
 
 - The workload may not have distinct phases
-- ISL (input sequence length) and OSL (output sequence length) might be similar
-- The model might have uniform behavior across phases
+- Use `-mode all` to see all patterns
+- ISL and OSL might be similar
 
 ### Wrong pattern selected
 
-- Uplifter selects based on temporal position
-- Prefill = earliest significant pattern
+- Uplifter selects based on temporal position and significance
+- Prefill = earliest significant pattern (>1% of events)
 - Decode = latest significant pattern
-- If patterns overlap significantly, classification may be imperfect
+- Use `-mode all` to see all patterns and compare manually
 
-### Too many/few kernels in cycle
+### Too many patterns detected
 
-- Adjust the outer/sub-cycle selection manually if needed
-- Check the cycle signature in debug output
-- The algorithm prioritizes patterns with most repetitions
+- Different kernel configurations create different patterns
+- Sub-cycle detection may find multiple valid layers
+- Use signature-based comparison to match similar patterns

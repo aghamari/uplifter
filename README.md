@@ -4,9 +4,9 @@ A tool for analyzing and comparing Perfetto traces from AMD GPU deep learning wo
 
 ## Features
 
-- **Automatic Phase Detection**: Separates prefill and decode phases automatically
-- **Cycle Detection**: Finds repeating kernel patterns (transformer layers)
-- **Trace Comparison**: Compares baseline vs optimized traces with two matching modes
+- **Automatic Cycle Detection**: Finds all repeating kernel patterns in traces
+- **Phase Detection**: Separates prefill and decode phases (LLM mode)
+- **Trace Comparison**: Two matching modes with automatic rotation detection
 - **Performance Heatmap**: Color-coded performance changes in XLSX output
 - **Statistics**: Min, max, avg, and stddev for each kernel
 
@@ -24,12 +24,14 @@ Requires Go 1.21+
 ### 1. Analyze a Trace
 
 ```bash
+# LLM mode (default) - detects prefill and decode phases
 ./uplifter -input trace.json.gz -output analysis
-```
+# Creates: analysis_prefill.csv, analysis_decode.csv
 
-This creates two files:
-- `analysis_prefill.csv` - Prefill phase kernels
-- `analysis_decode.csv` - Decode phase kernels
+# All mode - outputs all detected cycle patterns
+./uplifter -input trace.json.gz -output analysis -mode all
+# Creates: analysis_cycle_1.csv, analysis_cycle_2.csv, ...
+```
 
 ### 2. Compare Two Traces
 
@@ -57,13 +59,21 @@ This creates two files:
 ### `uplifter` - Cycle Detection
 
 ```bash
-./uplifter -input <trace.json.gz> -output <basename>
+./uplifter -input <trace.json.gz> -output <basename> [-mode llm|all]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-input` | Path to Perfetto trace file (.json or .json.gz) |
-| `-output` | Output base path (creates _prefill.csv and _decode.csv) |
+| `-output` | Output base path for CSV files |
+| `-mode` | Detection mode: `llm` (default) or `all` |
+
+#### Detection Modes
+
+| Mode | Output | Use Case |
+|------|--------|----------|
+| `llm` | `_prefill.csv`, `_decode.csv` | LLM inference traces |
+| `all` | `_cycle_1.csv`, `_cycle_2.csv`, ... | General traces, multiple patterns |
 
 ### `uplifter compare-csv` - Compare Traces
 
@@ -82,10 +92,10 @@ This creates two files:
 
 | Mode | Best For | Algorithm |
 |------|----------|-----------|
-| `match` | Compiled vs Compiled | Signature-based matching - finds best matches regardless of position |
-| `align` | Eager vs Compiled | LCS position-based alignment - shows insertions/deletions in order |
+| `match` | Compiled vs Compiled | Signature-based matching (position-independent) |
+| `align` | Eager vs Compiled | LCS alignment with automatic rotation detection |
 
-Use `-mode align` when comparing eager mode traces against compiled mode traces, as kernel order differs significantly. Use the default `-mode match` when comparing two compiled traces where kernels may have moved positions but should still match.
+The `align` mode automatically detects cycle rotation when comparing same-length cycles, ensuring optimal alignment even when cycle detection started at different anchor kernels.
 
 ## Output Formats
 
@@ -112,16 +122,29 @@ Change (%) heatmap:
 
 ## Example Workflows
 
+### Analyzing All Patterns in a Trace
+
+```bash
+# Detect all cycle patterns
+./uplifter -input trace.json.gz -output analysis -mode all
+# Creates: analysis_cycle_1.csv, analysis_cycle_2.csv, ...
+
+# Compare any two patterns
+./uplifter compare-csv \
+  -baseline analysis_cycle_1.csv \
+  -new analysis_cycle_3.csv \
+  -mode align \
+  -output pattern_comparison.xlsx
+```
+
 ### Comparing Two Compiled Versions
 
 ```bash
-# Analyze baseline
+# Analyze both versions
 ./uplifter -input baseline.json.gz -output baseline
-
-# Analyze optimized version
 ./uplifter -input optimized.json.gz -output optimized
 
-# Compare decode (main workload) - uses match mode by default
+# Compare decode phases
 ./uplifter compare-csv \
   -baseline baseline_decode.csv \
   -new optimized_decode.csv \
@@ -131,13 +154,11 @@ Change (%) heatmap:
 ### Comparing Eager vs Compiled
 
 ```bash
-# Analyze eager mode trace
+# Analyze both modes
 ./uplifter -input eager.json.gz -output eager
-
-# Analyze compiled mode trace
 ./uplifter -input compiled.json.gz -output compiled
 
-# Compare using align mode (preserves execution order)
+# Compare using align mode
 ./uplifter compare-csv \
   -baseline eager_decode.csv \
   -new compiled_decode.csv \
@@ -148,7 +169,7 @@ Change (%) heatmap:
 ## Documentation
 
 - **[Cycle Detection](docs/CYCLE_DETECTION.md)** - How cycle and phase detection works
-- **[Matching Algorithms](docs/MATCHING_ALGORITHMS.md)** - Kernel matching and signature extraction
+- **[Matching Algorithms](docs/MATCHING_ALGORITHMS.md)** - Kernel matching, signatures, and rotation detection
 
 ## License
 
