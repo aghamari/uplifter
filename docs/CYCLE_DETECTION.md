@@ -77,10 +77,10 @@ When comparing two traces, the XLSX includes:
 **Match Types:**
 | Type | Meaning | Color |
 |------|---------|-------|
-| `exact` | Identical kernel names | Green |
-| `similar` | Same kernel type, different parameters | Green |
-| `removed` | Only in baseline (optimized away) | Red |
-| `new_only` | Only in new version (new optimization) | Yellow |
+| `exact` | Identical kernel names | Light Green |
+| `similar` | Same kernel type, different config (e.g., block sizes) | Light Blue |
+| `removed` | Only in baseline (optimized away) | Light Red |
+| `new_only` | Only in new version (new optimization) | Light Yellow |
 
 **Change (%) Heatmap:**
 - 🟢 Green: Improved (>5% faster)

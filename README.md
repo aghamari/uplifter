@@ -83,9 +83,10 @@ index,kernel_name,avg_duration_us,min_duration_us,max_duration_us,stddev_us,coun
 ### XLSX Comparison
 
 Color-coded Excel file with:
-- **Green rows**: Matched kernels (exact or similar)
-- **Yellow rows**: New kernels (only in optimized version)
-- **Red rows**: Removed kernels (only in baseline)
+- **Light Green rows**: Exact matches (identical kernel names)
+- **Light Blue rows**: Similar matches (same kernel, different config/block sizes)
+- **Light Yellow rows**: New kernels (only in optimized version)
+- **Light Red rows**: Removed kernels (only in baseline)
 
 Change (%) heatmap:
 - 🟢 **Green**: Faster (improvement >5%)
