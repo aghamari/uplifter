@@ -142,6 +142,16 @@ func DetectCycleAuto(events []KernelEvent) (*CycleInfo, error) {
 	return DetectCycle(events, minLen, maxLen)
 }
 
+// CyclePattern represents a detected cycle with its temporal position
+type CyclePattern struct {
+	Info      *CycleInfo
+	Signature string
+	StartPos  int     // First occurrence position in trace
+	EndPos    int     // Last occurrence position in trace
+	CenterPos float64 // Average position (for classification)
+	Anchor    string  // Anchor kernel name
+}
+
 // DetectCycleBySignature uses a signature-based approach
 // It looks for a unique "anchor" kernel that appears periodically
 // and finds the MINIMUM cycle length (smallest repeating unit)
@@ -150,17 +160,15 @@ func DetectCycleBySignature(events []KernelEvent) (*CycleInfo, error) {
 		return nil, fmt.Errorf("not enough events")
 	}
 
-	// Phase detection using BOUNDARY DETECTION:
-	// Find distinct cycle patterns at different parts of the trace
-	// Prefill and decode have different patterns (especially attention kernels)
+	// Phase detection: Find ALL cycles, then classify by temporal position
 	var result *CycleInfo
 	var err error
 
 	switch PhaseMode {
 	case "prefill", "decode":
-		result, err = detectPhaseByBoundary(events, PhaseMode)
+		result, err = detectPhaseByAllCycles(events, PhaseMode)
 		if err != nil || result == nil {
-			fmt.Fprintf(os.Stderr, "Boundary detection failed, falling back to standard detection\n")
+			fmt.Fprintf(os.Stderr, "All-cycles detection failed, falling back to standard detection\n")
 			result, err = detectCycleStandard(events, 0)
 		}
 	default: // "auto"
@@ -170,56 +178,159 @@ func DetectCycleBySignature(events []KernelEvent) (*CycleInfo, error) {
 	return result, err
 }
 
-// detectPhaseByBoundary finds distinct cycle patterns for prefill vs decode
-// by comparing patterns at the beginning vs end of the trace
-func detectPhaseByBoundary(events []KernelEvent, phase string) (*CycleInfo, error) {
-	n := len(events)
+// detectPhaseByAllCycles finds ALL distinct cycle patterns in the trace,
+// then classifies them by temporal position (earlier = prefill, later = decode)
+func detectPhaseByAllCycles(events []KernelEvent, phase string) (*CycleInfo, error) {
+	fmt.Fprintf(os.Stderr, "Detecting all cycle patterns in %d events...\n", len(events))
 
-	// Find cycle pattern in first 15% (likely prefill region)
-	prefillEnd := n * 15 / 100
-	if prefillEnd < 500 {
-		prefillEnd = min(n/3, 2000)
-	}
-	fmt.Fprintf(os.Stderr, "Boundary detection: analyzing first %d events for prefill pattern...\n", prefillEnd)
-	prefillCycle := findOuterCycleWithSubcycle(events[:prefillEnd], events, 0)
+	// Find all distinct cycle patterns
+	patterns := findAllCyclePatterns(events)
 
-	// Find cycle pattern in last 60% (likely decode region)
-	decodeStart := n * 40 / 100
-	fmt.Fprintf(os.Stderr, "Boundary detection: analyzing events %d onwards for decode pattern...\n", decodeStart)
-	decodeCycle := findOuterCycleWithSubcycle(events[decodeStart:], events, decodeStart)
-
-	// Check if patterns are different
-	prefillSig := getCycleSignature(events, prefillCycle)
-	decodeSig := getCycleSignature(events, decodeCycle)
-
-	if prefillCycle != nil && decodeCycle != nil {
-		fmt.Fprintf(os.Stderr, "  Prefill pattern: %d kernels, signature: %s\n",
-			prefillCycle.CycleLength, truncateString(prefillSig, 60))
-		fmt.Fprintf(os.Stderr, "  Decode pattern: %d kernels, signature: %s\n",
-			decodeCycle.CycleLength, truncateString(decodeSig, 60))
+	if len(patterns) == 0 {
+		return nil, fmt.Errorf("no cycle patterns found")
 	}
 
-	// Determine which pattern to return based on phase
+	fmt.Fprintf(os.Stderr, "Found %d distinct cycle patterns:\n", len(patterns))
+	for i, p := range patterns {
+		fmt.Fprintf(os.Stderr, "  %d. length=%d, reps=%d, center=%.1f%%, sig=%s\n",
+			i+1, p.Info.CycleLength, p.Info.NumCycles,
+			p.CenterPos/float64(len(events))*100,
+			truncateString(p.Signature, 50))
+	}
+
+	// Sort patterns by center position (earlier first)
+	sort.Slice(patterns, func(i, j int) bool {
+		return patterns[i].CenterPos < patterns[j].CenterPos
+	})
+
+	// Classify: earliest center = prefill, latest center = decode
 	if phase == "prefill" {
-		if prefillCycle != nil {
-			// If patterns are different, we found a distinct prefill phase
-			if prefillSig != decodeSig {
-				fmt.Fprintf(os.Stderr, "Found distinct PREFILL pattern (different from decode)\n")
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: prefill and decode patterns appear similar\n")
-			}
-			return prefillCycle, nil
-		}
+		// Return pattern with earliest center position
+		selected := patterns[0]
+		fmt.Fprintf(os.Stderr, "Selected PREFILL pattern: center=%.1f%%, length=%d, reps=%d\n",
+			selected.CenterPos/float64(len(events))*100,
+			selected.Info.CycleLength, selected.Info.NumCycles)
+		return selected.Info, nil
 	} else { // decode
-		if decodeCycle != nil {
-			if prefillSig != decodeSig {
-				fmt.Fprintf(os.Stderr, "Found distinct DECODE pattern (different from prefill)\n")
-			}
-			return decodeCycle, nil
+		// Return pattern with latest center position
+		selected := patterns[len(patterns)-1]
+		fmt.Fprintf(os.Stderr, "Selected DECODE pattern: center=%.1f%%, length=%d, reps=%d\n",
+			selected.CenterPos/float64(len(events))*100,
+			selected.Info.CycleLength, selected.Info.NumCycles)
+		return selected.Info, nil
+	}
+}
+
+// findAllCyclePatterns finds all distinct cycle patterns in the events
+func findAllCyclePatterns(events []KernelEvent) []CyclePattern {
+	// Count kernel occurrences
+	counts := make(map[string]int)
+	for _, e := range events {
+		counts[e.Name]++
+	}
+
+	// Find anchor candidates
+	type candidate struct {
+		name     string
+		count    int
+		cycleLen int
+	}
+	var candidates []candidate
+	for name, count := range counts {
+		if count >= 5 && count <= len(events)/5 {
+			estimatedCycleLen := len(events) / count
+			candidates = append(candidates, candidate{name, count, estimatedCycleLen})
 		}
 	}
 
-	return nil, fmt.Errorf("could not detect %s pattern", phase)
+	// Sort by count
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].count > candidates[j].count
+	})
+
+	// Find all valid cycles and group by signature
+	signatureGroups := make(map[string]*CyclePattern)
+
+	for _, cand := range candidates {
+		positions := findKernelPositions(events, cand.name)
+		if len(positions) < 5 {
+			continue
+		}
+
+		cycleLen := positions[1] - positions[0]
+		if cycleLen < 10 {
+			continue
+		}
+
+		// Check consistency
+		isConsistent := true
+		for i := 2; i < len(positions); i++ {
+			diff := positions[i] - positions[i-1]
+			if abs(diff-cycleLen) > max(1, cycleLen/20) {
+				isConsistent = false
+				break
+			}
+		}
+
+		if !isConsistent {
+			continue
+		}
+
+		// Verify the cycle
+		info := verifyCycle(events, positions[0], cycleLen, len(positions))
+		if info == nil || info.NumCycles < 5 {
+			continue
+		}
+
+		// Look for sub-cycles
+		if info.CycleLength > 20 {
+			cycleEvents := events[info.StartIndex : info.StartIndex+info.CycleLength]
+			subCycle := findSubCycle(cycleEvents, events, info)
+			if subCycle != nil {
+				info = subCycle
+			}
+		}
+
+		// Get signature for this cycle
+		sig := getCycleSignature(events, info)
+
+		// Calculate temporal position
+		startPos := info.StartIndex
+		endPos := info.CycleIndices[len(info.CycleIndices)-1] + info.CycleLength
+		centerPos := float64(startPos+endPos) / 2.0
+
+		// Group by signature - keep the one with better stats
+		if existing, ok := signatureGroups[sig]; ok {
+			// Keep the pattern with more repetitions
+			if info.NumCycles > existing.Info.NumCycles {
+				signatureGroups[sig] = &CyclePattern{
+					Info:      info,
+					Signature: sig,
+					StartPos:  startPos,
+					EndPos:    endPos,
+					CenterPos: centerPos,
+					Anchor:    cand.name,
+				}
+			}
+		} else {
+			signatureGroups[sig] = &CyclePattern{
+				Info:      info,
+				Signature: sig,
+				StartPos:  startPos,
+				EndPos:    endPos,
+				CenterPos: centerPos,
+				Anchor:    cand.name,
+			}
+		}
+	}
+
+	// Convert map to slice
+	var patterns []CyclePattern
+	for _, p := range signatureGroups {
+		patterns = append(patterns, *p)
+	}
+
+	return patterns
 }
 
 // findOuterCycleWithSubcycle finds outer cycle and its sub-cycle in one go
