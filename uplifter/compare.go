@@ -11,9 +11,9 @@ import (
 )
 
 // CompareMode controls comparison algorithm: "align" or "match"
-// align = position-based LCS alignment (for eager vs compiled)
-// match = signature-based matching (for compiled vs compiled)
-var CompareMode = "match"
+// align = position-based LCS alignment with auto rotation detection (default)
+// match = signature-based matching (position-independent)
+var CompareMode = "align"
 
 // CompareResult holds the comparison between two traces
 type CompareResult struct {

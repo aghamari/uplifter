@@ -6,15 +6,14 @@ Uplifter provides two matching algorithms for comparing kernel cycles between tr
 
 | Comparison Type | Mode | Command |
 |-----------------|------|---------|
-| Compiled vs Compiled | `match` (default) | `compare-csv -baseline a.csv -new b.csv` |
-| Eager vs Compiled | `align` | `compare-csv -baseline eager.csv -new compiled.csv -mode align` |
-| Same trace, different cycles | `align` | `compare-csv -baseline cycle_1.csv -new cycle_3.csv -mode align` |
+| General use | `align` (default) | `compare-csv -baseline a.csv -new b.csv` |
+| Heavily reordered | `match` | `compare-csv -baseline a.csv -new b.csv -mode match` |
 
 ---
 
 ## Mode 1: Signature-Based Matching (`-mode match`)
 
-**Default mode.** Best for comparing two compiled traces where kernels may have different positions but should still match.
+Best for comparing traces where kernels have been heavily reordered and position-based alignment fails.
 
 ### How It Works
 
@@ -66,9 +65,9 @@ func matchBySignature(eagerResult, compiledResult *CycleResult) []KernelMatch {
 
 ---
 
-## Mode 2: Position-Based Alignment (`-mode align`)
+## Mode 2: Position-Based Alignment (`-mode align`, default)
 
-Best for comparing traces where kernel order matters. Includes **automatic cycle rotation detection**.
+**Default mode.** Best for most comparisons. Includes **automatic cycle rotation detection**.
 
 ### How It Works
 

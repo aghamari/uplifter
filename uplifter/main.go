@@ -30,7 +30,7 @@ func runCompareCSV(args []string) {
 	csv2 := compareFlags.String("new", "", "Path to new/optimized CSV")
 	outputFile := compareFlags.String("output", "", "Output file path (.csv or .xlsx)")
 	showSummary := compareFlags.Bool("summary", true, "Print summary to stderr")
-	mode := compareFlags.String("mode", "match", "Comparison mode: 'align' (eager vs compiled, position-based) or 'match' (compiled vs compiled, signature-based)")
+	mode := compareFlags.String("mode", "align", "Comparison mode: 'align' (default, position-based with rotation) or 'match' (signature-based, position-independent)")
 
 	compareFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Uplifter Compare - Compare kernel cycles between two traces\n\n")
@@ -38,15 +38,15 @@ func runCompareCSV(args []string) {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		compareFlags.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nModes:\n")
-		fmt.Fprintf(os.Stderr, "  align - Position-based alignment (for eager vs compiled)\n")
+		fmt.Fprintf(os.Stderr, "  align - Position-based alignment with auto rotation detection (default)\n")
 		fmt.Fprintf(os.Stderr, "          Shows insertions/deletions in execution order\n")
-		fmt.Fprintf(os.Stderr, "  match - Signature-based matching (for compiled vs compiled)\n")
+		fmt.Fprintf(os.Stderr, "  match - Signature-based matching (position-independent)\n")
 		fmt.Fprintf(os.Stderr, "          Finds best matches regardless of position\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  # Eager vs compiled (use align mode):\n")
-		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -baseline eager.csv -new compiled.csv -mode align -output compare.xlsx\n")
-		fmt.Fprintf(os.Stderr, "\n  # Compiled vs compiled (use match mode, default):\n")
+		fmt.Fprintf(os.Stderr, "  # Compare two traces (align mode is default):\n")
 		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -baseline baseline.csv -new optimized.csv -output compare.xlsx\n")
+		fmt.Fprintf(os.Stderr, "\n  # Use match mode for heavily reordered traces:\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare-csv -baseline a.csv -new b.csv -mode match -output compare.xlsx\n")
 	}
 
 	compareFlags.Parse(args)

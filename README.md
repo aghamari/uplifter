@@ -86,16 +86,16 @@ Requires Go 1.21+
 | `-baseline` | Path to baseline CSV |
 | `-new` | Path to new/optimized CSV |
 | `-output` | Output file (.csv or .xlsx) |
-| `-mode` | Comparison mode: `match` (default) or `align` |
+| `-mode` | Comparison mode: `align` (default) or `match` |
 
 #### Comparison Modes
 
 | Mode | Best For | Algorithm |
 |------|----------|-----------|
-| `match` | Compiled vs Compiled | Signature-based matching (position-independent) |
-| `align` | Eager vs Compiled | LCS alignment with automatic rotation detection |
+| `align` | General use (default) | LCS alignment with automatic rotation detection |
+| `match` | Heavily reordered traces | Signature-based matching (position-independent) |
 
-The `align` mode automatically detects cycle rotation when comparing same-length cycles, ensuring optimal alignment even when cycle detection started at different anchor kernels.
+The default `align` mode automatically detects cycle rotation when comparing same-length cycles, ensuring optimal alignment even when cycle detection started at different anchor kernels.
 
 ## Output Formats
 
