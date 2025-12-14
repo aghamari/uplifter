@@ -546,7 +546,7 @@ func (r *CompareResult) WriteSummary(w io.Writer) {
 		}
 	}
 
-	for i := 0; i < minInt(10, len(entries)); i++ {
+	for i := 0; i < min(10, len(entries)); i++ {
 		e := entries[i]
 		pct := 0.0
 		if r.TotalTime > 0 {

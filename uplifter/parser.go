@@ -258,7 +258,7 @@ func ParseWithEarlyStop(filename string, minCycle, maxCycle int) ([]KernelEvent,
 	var events []KernelEvent
 	kernelCount := 0
 	checkInterval := 10000 // Check for cycles every N kernels
-	minEventsForDetection := maxInt(minCycle*5, 1000) // Need at least 5 potential cycles
+	minEventsForDetection := max(minCycle*5, 1000) // Need at least 5 potential cycles
 
 	err := ParseKernelEventsWithCallback(filename, func(event KernelEvent) bool {
 		events = append(events, event)
@@ -272,7 +272,7 @@ func ParseWithEarlyStop(filename string, minCycle, maxCycle int) ([]KernelEvent,
 		// Periodically check if we've found a cycle
 		if kernelCount >= minEventsForDetection && kernelCount%checkInterval == 0 {
 			// Try to detect a cycle in what we have so far
-			cycleInfo := tryEarlyDetection(events, minCycle, minInt(maxCycle, len(events)/3))
+			cycleInfo := tryEarlyDetection(events, minCycle, min(maxCycle, len(events)/3))
 			if cycleInfo != nil && cycleInfo.NumCycles >= 10 {
 				// Found a confident cycle with 10+ reps (skip warmup patterns), we can stop
 				fmt.Fprintf(os.Stderr, "\rEarly stop: detected cycle of length %d with %d repetitions (at %d kernels)\n",
@@ -385,19 +385,5 @@ func verifyCycleQuick(events []KernelEvent, cycleLen, startIdx int) *CycleInfo {
 	}
 
 	return nil
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
