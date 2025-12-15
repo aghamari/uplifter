@@ -266,7 +266,8 @@ func findAllCyclePatterns(events []KernelEvent) []CyclePattern {
 		isConsistent := true
 		for i := 2; i < len(positions); i++ {
 			diff := positions[i] - positions[i-1]
-			if abs(diff-cycleLen) > max(1, cycleLen/20) {
+			// Relaxed tolerance: 20% instead of 5%
+			if abs(diff-cycleLen) > max(1, cycleLen/5) {
 				isConsistent = false
 				break
 			}
@@ -465,7 +466,8 @@ func findOuterCycle(events []KernelEvent) *CycleInfo {
 		consistentCount := 1
 		for i := 2; i < len(positions); i++ {
 			diff := positions[i] - positions[i-1]
-			if abs(diff-cycleLen) > max(1, cycleLen/20) {
+			// Relaxed tolerance: 20% instead of 5%
+			if abs(diff-cycleLen) > max(1, cycleLen/5) {
 				isConsistent = false
 				break
 			}
