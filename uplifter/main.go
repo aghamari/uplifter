@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -387,6 +389,7 @@ func runCompareAll(args []string) {
 	baselineDir := compareFlags.String("baseline", "", "Base path for baseline CSVs (e.g., /tmp/baseline)")
 	newDir := compareFlags.String("new", "", "Base path for new CSVs (e.g., /tmp/optimized)")
 	outputFile := compareFlags.String("output", "", "Output XLSX file path")
+	smartMatch := compareFlags.Bool("smart", false, "Use smart matching based on kernel similarity (instead of cycle number)")
 
 	compareFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Uplifter Compare All - Compare all cycle pairs in one XLSX\n\n")
@@ -395,11 +398,13 @@ func runCompareAll(args []string) {
 		fmt.Fprintf(os.Stderr, "  <base_path>_cycle_1.csv vs <new_path>_cycle_1.csv\n")
 		fmt.Fprintf(os.Stderr, "  <base_path>_cycle_2.csv vs <new_path>_cycle_2.csv\n")
 		fmt.Fprintf(os.Stderr, "  ...\n\n")
+		fmt.Fprintf(os.Stderr, "With -smart, cycles are matched by kernel similarity instead of number.\n\n")
 		fmt.Fprintf(os.Stderr, "Output is a single XLSX with one tab per cycle comparison.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		compareFlags.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  uplifter compare-all -baseline /tmp/baseline -new /tmp/optimized -output comparison.xlsx\n")
+		fmt.Fprintf(os.Stderr, "  uplifter compare-all -baseline /tmp/baseline -new /tmp/optimized -output comparison.xlsx -smart\n")
 	}
 
 	compareFlags.Parse(args)
@@ -410,36 +415,63 @@ func runCompareAll(args []string) {
 		os.Exit(1)
 	}
 
-	// Find all cycle files
+	// Find all cycle files for baseline
+	var baselineFiles []string
+	for i := 1; ; i++ {
+		f := fmt.Sprintf("%s_cycle_%d.csv", *baselineDir, i)
+		if _, err := os.Stat(f); os.IsNotExist(err) {
+			break
+		}
+		baselineFiles = append(baselineFiles, f)
+	}
+
+	// Find all cycle files for new
+	var newFiles []string
+	for i := 1; ; i++ {
+		f := fmt.Sprintf("%s_cycle_%d.csv", *newDir, i)
+		if _, err := os.Stat(f); os.IsNotExist(err) {
+			break
+		}
+		newFiles = append(newFiles, f)
+	}
+
+	if len(baselineFiles) == 0 || len(newFiles) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no cycle files found (baseline: %d, new: %d)\n", len(baselineFiles), len(newFiles))
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Found %d baseline cycles and %d new cycles\n", len(baselineFiles), len(newFiles))
+
 	var comparisons []*CompareResult
 	var sheetNames []string
 
-	for i := 1; ; i++ {
-		baselineFile := fmt.Sprintf("%s_cycle_%d.csv", *baselineDir, i)
-		newFile := fmt.Sprintf("%s_cycle_%d.csv", *newDir, i)
-
-		// Check if files exist
-		if _, err := os.Stat(baselineFile); os.IsNotExist(err) {
-			break
-		}
-		if _, err := os.Stat(newFile); os.IsNotExist(err) {
-			break
-		}
-
-		fmt.Fprintf(os.Stderr, "Comparing cycle %d...\n", i)
-
-		result, err := CompareFromCSV(baselineFile, newFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error comparing cycle %d: %v\n", i, err)
-			continue
+	if *smartMatch {
+		// Smart matching: find best pairing based on kernel similarity
+		fmt.Fprintf(os.Stderr, "\n=== Smart Matching Mode ===\n")
+		comparisons, sheetNames = smartMatchCycles(baselineFiles, newFiles)
+	} else {
+		// Simple matching by cycle number
+		minCycles := len(baselineFiles)
+		if len(newFiles) < minCycles {
+			minCycles = len(newFiles)
 		}
 
-		comparisons = append(comparisons, result)
-		sheetNames = append(sheetNames, fmt.Sprintf("Cycle %d", i))
+		for i := 0; i < minCycles; i++ {
+			fmt.Fprintf(os.Stderr, "Comparing cycle %d...\n", i+1)
+
+			result, err := CompareFromCSV(baselineFiles[i], newFiles[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error comparing cycle %d: %v\n", i+1, err)
+				continue
+			}
+
+			comparisons = append(comparisons, result)
+			sheetNames = append(sheetNames, fmt.Sprintf("Cycle %d", i+1))
+		}
 	}
 
 	if len(comparisons) == 0 {
-		fmt.Fprintf(os.Stderr, "Error: no cycle files found\n")
+		fmt.Fprintf(os.Stderr, "Error: no valid comparisons\n")
 		os.Exit(1)
 	}
 
@@ -451,6 +483,199 @@ func runCompareAll(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "Done! Created %s with %d tabs\n", *outputFile, len(comparisons))
+}
+
+// cycleInfo holds info about a cycle for matching
+type cycleInfo struct {
+	file       string
+	kernelSigs map[string]float64 // signature -> % of cycle time
+	avgTime    float64
+	numKernels int
+}
+
+// smartMatchCycles finds the best pairing between baseline and new cycles
+func smartMatchCycles(baselineFiles, newFiles []string) ([]*CompareResult, []string) {
+	// Load all cycle info
+	baselineCycles := make([]cycleInfo, len(baselineFiles))
+	newCycles := make([]cycleInfo, len(newFiles))
+
+	fmt.Fprintf(os.Stderr, "Loading baseline cycles...\n")
+	for i, f := range baselineFiles {
+		baselineCycles[i] = loadCycleInfo(f)
+	}
+
+	fmt.Fprintf(os.Stderr, "Loading new cycles...\n")
+	for i, f := range newFiles {
+		newCycles[i] = loadCycleInfo(f)
+	}
+
+	// Compute similarity matrix
+	fmt.Fprintf(os.Stderr, "Computing similarity matrix...\n")
+	similarity := make([][]float64, len(baselineCycles))
+	for i := range similarity {
+		similarity[i] = make([]float64, len(newCycles))
+		for j := range similarity[i] {
+			similarity[i][j] = computeCycleSimilarity(baselineCycles[i], newCycles[j])
+		}
+	}
+
+	// Greedy matching: pick best pairs iteratively
+	usedBaseline := make(map[int]bool)
+	usedNew := make(map[int]bool)
+	type match struct {
+		baseIdx int
+		newIdx  int
+		sim     float64
+	}
+	var matches []match
+
+	for {
+		bestSim := 0.0
+		bestBase, bestNew := -1, -1
+
+		for i := 0; i < len(baselineCycles); i++ {
+			if usedBaseline[i] {
+				continue
+			}
+			for j := 0; j < len(newCycles); j++ {
+				if usedNew[j] {
+					continue
+				}
+				if similarity[i][j] > bestSim {
+					bestSim = similarity[i][j]
+					bestBase = i
+					bestNew = j
+				}
+			}
+		}
+
+		if bestBase < 0 || bestSim < 0.2 { // Minimum 20% similarity threshold
+			break
+		}
+
+		usedBaseline[bestBase] = true
+		usedNew[bestNew] = true
+		matches = append(matches, match{bestBase, bestNew, bestSim})
+
+		fmt.Fprintf(os.Stderr, "  Matched: baseline cycle %d ↔ new cycle %d (%.1f%% similar)\n",
+			bestBase+1, bestNew+1, bestSim*100)
+	}
+
+	// Sort matches by baseline cycle number for consistent output
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].baseIdx < matches[j].baseIdx
+	})
+
+	// Compare matched pairs
+	var comparisons []*CompareResult
+	var sheetNames []string
+
+	for _, m := range matches {
+		result, err := CompareFromCSV(baselineFiles[m.baseIdx], newFiles[m.newIdx])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error comparing: %v\n", err)
+			continue
+		}
+
+		comparisons = append(comparisons, result)
+		sheetNames = append(sheetNames, fmt.Sprintf("Base%d↔New%d (%.0f%%)", m.baseIdx+1, m.newIdx+1, m.sim*100))
+	}
+
+	return comparisons, sheetNames
+}
+
+// loadCycleInfo loads cycle metadata from a CSV file
+func loadCycleInfo(path string) cycleInfo {
+	info := cycleInfo{
+		file:       path,
+		kernelSigs: make(map[string]float64),
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return info
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	reader.FieldsPerRecord = -1
+
+	// Skip metadata lines
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			return info
+		}
+		if len(record) > 0 && !strings.HasPrefix(record[0], "#") && record[0] != "index" {
+			break
+		}
+		// Parse avg cycle time from metadata
+		if len(record) >= 2 && record[0] == "# Avg cycle time (us)" {
+			if v, err := strconv.ParseFloat(record[1], 64); err == nil {
+				info.avgTime = v
+			}
+		}
+	}
+
+	// Read kernel rows
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			break
+		}
+		if len(record) < 8 {
+			continue
+		}
+
+		name := record[1] // kernel_name
+		sig := getKernelSignature(name)
+		pct := 0.0
+		if v, err := strconv.ParseFloat(record[7], 64); err == nil {
+			pct = v
+		}
+
+		info.kernelSigs[sig] += pct
+		info.numKernels++
+	}
+
+	return info
+}
+
+// computeCycleSimilarity computes similarity between two cycles
+func computeCycleSimilarity(a, b cycleInfo) float64 {
+	if len(a.kernelSigs) == 0 || len(b.kernelSigs) == 0 {
+		return 0
+	}
+
+	// Weighted Jaccard: sum of min(a[k], b[k]) / sum of max(a[k], b[k])
+	// where k is a kernel signature present in either cycle
+	allSigs := make(map[string]bool)
+	for k := range a.kernelSigs {
+		allSigs[k] = true
+	}
+	for k := range b.kernelSigs {
+		allSigs[k] = true
+	}
+
+	minSum, maxSum := 0.0, 0.0
+	for k := range allSigs {
+		aVal := a.kernelSigs[k]
+		bVal := b.kernelSigs[k]
+
+		if aVal < bVal {
+			minSum += aVal
+			maxSum += bVal
+		} else {
+			minSum += bVal
+			maxSum += aVal
+		}
+	}
+
+	if maxSum == 0 {
+		return 0
+	}
+
+	return minSum / maxSum
 }
 
 // Helper to remove extension from path
