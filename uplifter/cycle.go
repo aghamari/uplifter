@@ -331,7 +331,139 @@ func findAllCyclePatterns(events []KernelEvent) []CyclePattern {
 		patterns = append(patterns, *p)
 	}
 
+	// Second pass: merge similar patterns (>80% kernel overlap)
+	patterns = deduplicateSimilarPatterns(events, patterns)
+
 	return patterns
+}
+
+// deduplicateSimilarPatterns merges patterns that have >80% kernel signature overlap
+func deduplicateSimilarPatterns(events []KernelEvent, patterns []CyclePattern) []CyclePattern {
+	if len(patterns) <= 1 {
+		return patterns
+	}
+
+	// Extract kernel signature sets for each pattern
+	type patternSigs struct {
+		pattern CyclePattern
+		sigs    map[string]float64 // kernel sig -> % of cycle
+	}
+	var allPatterns []patternSigs
+
+	for _, p := range patterns {
+		sigs := make(map[string]float64)
+		if p.Info != nil && p.Info.StartIndex+p.Info.CycleLength <= len(events) {
+			for i := 0; i < p.Info.CycleLength; i++ {
+				idx := p.Info.StartIndex + i
+				sig := getKernelSignature(events[idx].Name)
+				// Weight by duration
+				sigs[sig] += events[idx].Duration
+			}
+			// Normalize to percentages
+			total := 0.0
+			for _, v := range sigs {
+				total += v
+			}
+			if total > 0 {
+				for k := range sigs {
+					sigs[k] = sigs[k] / total * 100
+				}
+			}
+		}
+		allPatterns = append(allPatterns, patternSigs{p, sigs})
+	}
+
+	// Group similar patterns
+	type group struct {
+		members []patternSigs
+	}
+	var groups []group
+	used := make(map[int]bool)
+
+	for i := 0; i < len(allPatterns); i++ {
+		if used[i] {
+			continue
+		}
+
+		// Start new group
+		g := group{members: []patternSigs{allPatterns[i]}}
+		used[i] = true
+
+		// Find similar patterns
+		for j := i + 1; j < len(allPatterns); j++ {
+			if used[j] {
+				continue
+			}
+
+			// Check length similarity (within 20%)
+			lenI := allPatterns[i].pattern.Info.CycleLength
+			lenJ := allPatterns[j].pattern.Info.CycleLength
+			if abs(lenI-lenJ) > max(lenI, lenJ)/5 {
+				continue
+			}
+
+			// Check kernel overlap (weighted Jaccard)
+			sim := computePatternSimilarity(allPatterns[i].sigs, allPatterns[j].sigs)
+			if sim >= 0.80 { // 80% similarity threshold
+				g.members = append(g.members, allPatterns[j])
+				used[j] = true
+			}
+		}
+
+		groups = append(groups, g)
+	}
+
+	// Pick best representative from each group
+	var result []CyclePattern
+	for _, g := range groups {
+		best := g.members[0]
+		for _, m := range g.members[1:] {
+			// Prefer pattern with more repetitions
+			if m.pattern.Info.NumCycles > best.pattern.Info.NumCycles {
+				best = m
+			}
+		}
+		if len(g.members) > 1 {
+			fmt.Fprintf(os.Stderr, "  Merged %d similar patterns into one (anchor: %s)\n",
+				len(g.members), truncateString(best.pattern.Anchor, 40))
+		}
+		result = append(result, best.pattern)
+	}
+
+	return result
+}
+
+// computePatternSimilarity computes weighted Jaccard similarity between two patterns
+func computePatternSimilarity(a, b map[string]float64) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+
+	allKeys := make(map[string]bool)
+	for k := range a {
+		allKeys[k] = true
+	}
+	for k := range b {
+		allKeys[k] = true
+	}
+
+	minSum, maxSum := 0.0, 0.0
+	for k := range allKeys {
+		aVal := a[k]
+		bVal := b[k]
+		if aVal < bVal {
+			minSum += aVal
+			maxSum += bVal
+		} else {
+			minSum += bVal
+			maxSum += aVal
+		}
+	}
+
+	if maxSum == 0 {
+		return 0
+	}
+	return minSum / maxSum
 }
 
 // findOuterCycleWithSubcycle finds outer cycle and its sub-cycle in one go
